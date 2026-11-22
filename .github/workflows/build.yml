@@ -21,11 +21,8 @@ jobs:
         run: |
           apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
-          # Major.minor only: patch releases should keep sharing the cache.
+          # major.minor only
           echo "version=$(cut -d. -f1,2 /etc/alpine-release)" >> "$GITHUB_OUTPUT"
-          # The mounted workspace belongs to the host runner user while the
-          # container steps run as root, so Git >= 2.35 refuses to read it
-          # ("dubious ownership"). Trust the workspace for later steps.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Checkout
@@ -44,8 +41,8 @@ jobs:
           cache_key: alpinelinux-v${{ steps.alpine.outputs.version }}
 
       - name: Conan Install
-        # https://github.com/conan-io/conan-center-index/issues/21150
         run: |
+          # https://github.com/conan-io/conan-center-index/issues/21150
           echo -e '\n[platform_tool_requires]\nm4/1.4.19' >> ~/.conan2/profiles/default
           conan install . --build="*" -s compiler.cppstd=20 -s build_type=Debug \
                 -c tools.build:cflags="['-static']" \
