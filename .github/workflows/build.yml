@@ -35,7 +35,6 @@ jobs:
       - name: Conan Install
         # https://github.com/conan-io/conan-center-index/issues/21150
         run: |
-          conan profile detect
           echo -e '\n[platform_tool_requires]\nm4/*' >> ~/.conan2/profiles/default
           conan install . --build="*" -s compiler.cppstd=20 -s build_type=Debug \
                 -c tools.build:cflags="['-static']" \
