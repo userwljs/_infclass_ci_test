@@ -19,7 +19,7 @@ jobs:
         id: alpine
         shell: sh
         run: |
-          apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4
+          apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4 tar
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
           # major.minor only
           echo "version=$(cut -d. -f1,2 /etc/alpine-release)" >> "$GITHUB_OUTPUT"
