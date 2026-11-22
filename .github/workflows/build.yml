@@ -18,17 +18,12 @@ jobs:
       - name: Prepare Alpine Linux
         shell: sh
         run: |
-          apk add --no-cache build-base bash git
+          apk add --no-cache build-base bash git python3 py3-pip
 
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v7.0.0
-        with:
-          python-version: '3.11'
 
       - name: Setup Conan
         uses: conan-io/setup-conan@v1.4.0
