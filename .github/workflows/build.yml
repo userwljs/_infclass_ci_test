@@ -18,7 +18,7 @@ jobs:
       - name: Prepare Alpine Linux
         shell: sh
         run: |
-          apk add --no-cache build-base bash git python3 py3-pip cmake perl
+          apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
 
       - name: Checkout
