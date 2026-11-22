@@ -11,11 +11,14 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     container: alpine:latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Prepare Alpine Linux
+        shell: sh
         run: |
           apk add --no-cache build-base bash git
-          ls -R /__t/Python
 
       - name: Checkout
         uses: actions/checkout@v7.0.1
