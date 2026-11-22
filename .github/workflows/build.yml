@@ -18,7 +18,7 @@ jobs:
       - name: Prepare Alpine Linux
         shell: sh
         run: |
-          apk add --no-cache build-base bash git python3 py3-pip
+          apk add --no-cache build-base bash git python3 py3-pip cmake
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
 
       - name: Checkout
@@ -31,9 +31,6 @@ jobs:
         with:
           version: '2.34.0'
           cache_packages: true
-
-      - name: Setup CMake
-        uses: lukka/get-cmake@v4.4.2
 
       - name: Conan Install
         run: |
