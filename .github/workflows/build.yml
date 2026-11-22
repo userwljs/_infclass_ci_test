@@ -18,7 +18,7 @@ jobs:
       - name: Prepare Alpine Linux
         shell: sh
         run: |
-          apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4
+          apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
 
       - name: Checkout
@@ -33,15 +33,16 @@ jobs:
           cache_packages: true
 
       - name: Conan Install
+        # https://github.com/conan-io/conan-center-index/issues/21150
         run: |
-          conan install . --build=missing -s compiler.cppstd=20 -s build_type=Debug \
+          conan install . --build="*" -s compiler.cppstd=20 -s build_type=Debug \
                 -c tools.build:cflags="['-static']" \
                 -c tools.build:cxxflags="['-static']" \
                 -c tools.build:exelinkflags="['-static']"
 
       - name: Build
         run: |
-          conan build . --build=missing -s compiler.cppstd=20 -s build_type=Debug \
+          conan build . --build="*" -s compiler.cppstd=20 -s build_type=Debug \
                 -c tools.build:cflags="['-static']" \
                 -c tools.build:cxxflags="['-static']" \
                 -c tools.build:exelinkflags="['-static']"
