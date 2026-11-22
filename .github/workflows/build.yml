@@ -16,10 +16,12 @@ jobs:
         shell: bash
     steps:
       - name: Prepare Alpine Linux
+        id: alpine
         shell: sh
         run: |
           apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
+          echo "version=$(cat /etc/alpine-release)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -31,6 +33,9 @@ jobs:
         with:
           version: '2.34.0'
           cache_packages: true
+          # Container jobs all report the runner image, so separate the Conan
+          # package cache per Alpine release instead of mixing musl builds.
+          cache_key: alpinelinux-v${{ steps.alpine.outputs.version }}
 
       - name: Conan Install
         # https://github.com/conan-io/conan-center-index/issues/21150
