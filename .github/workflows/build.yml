@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare Alpine Linux
-        run: apk add --no-cache build-base
+        run: apk add --no-cache build-base bash
 
       - name: Setup Python
         uses: actions/setup-python@v7.0.0
