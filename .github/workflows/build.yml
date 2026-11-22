@@ -38,16 +38,16 @@ jobs:
       - name: Conan Install
         run: |
           conan install . --build=missing -s compiler.cppstd=20 -s build_type=Debug \
-                -c tools.build:cflags=-static, \
-                -c tools.build:cxxflags=-static, \
-                -c tools.build:exelinkflags=-static, \
+                -c tools.build:cflags=["-static"], \
+                -c tools.build:cxxflags=["-static"], \
+                -c tools.build:exelinkflags=["-static"], \
 
       - name: Build
         run: |
           conan build . --build=missing -s compiler.cppstd=20 -s build_type=Debug \
-                -c tools.build:cflags=-static, \
-                -c tools.build:cxxflags=-static, \
-                -c tools.build:exelinkflags=-static, \
+                -c tools.build:cflags=["-static"] \
+                -c tools.build:cxxflags=["-static"], \
+                -c tools.build:exelinkflags=["-static"], \
 
       - name: Package
         shell: bash
