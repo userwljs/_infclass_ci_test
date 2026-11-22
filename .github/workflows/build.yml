@@ -18,7 +18,7 @@ jobs:
       - name: Prepare Alpine Linux
         shell: sh
         run: |
-          apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4=1.4.19
+          apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
 
       - name: Checkout
@@ -36,7 +36,7 @@ jobs:
         # https://github.com/conan-io/conan-center-index/issues/21150
         run: |
           conan profile detect
-          echo -e '\n[platform_tool_requires]\nm4/1.4.19' >> ~/.conan2/profiles/default
+          echo -e '\n[platform_tool_requires]\nm4/*' >> ~/.conan2/profiles/default
           conan install . --build="*" -s compiler.cppstd=20 -s build_type=Debug \
                 -c tools.build:cflags="['-static']" \
                 -c tools.build:cxxflags="['-static']" \
