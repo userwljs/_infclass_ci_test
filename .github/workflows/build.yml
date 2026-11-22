@@ -22,6 +22,10 @@ jobs:
           apk add --no-cache build-base bash git python3 py3-pip cmake perl linux-headers m4
           rm /usr/lib/python3.*/EXTERNALLY-MANAGED
           echo "version=$(cat /etc/alpine-release)" >> "$GITHUB_OUTPUT"
+          # The mounted workspace belongs to the host runner user while the
+          # container steps run as root, so Git >= 2.35 refuses to read it
+          # ("dubious ownership"). Trust the workspace for later steps.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Checkout
         uses: actions/checkout@v7.0.1
