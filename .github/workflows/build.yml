@@ -18,12 +18,7 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare Alpine Linux
-        run: apk add --no-cache build-base bash
-
-      - name: Setup Python
-        uses: actions/setup-python@v7.0.0
-        with:
-          python-version: '3.11'
+        run: apk add --no-cache build-base bash python3
 
       - name: Setup Conan
         uses: conan-io/setup-conan@v1.4.0
@@ -36,11 +31,17 @@ jobs:
 
       - name: Conan Install
         run: |
-          conan install . --build=missing -s compiler.cppstd=20 -s build_type=Debug ${{ matrix.conan-args }}
+          conan install . --build=missing -s compiler.cppstd=20 -s build_type=Debug \
+                -c tools.build:cflags=-static \
+                -c tools.build:cxxflags=-static \
+                -c tools.build:exelinkflags=-static \
 
       - name: Build
         run: |
-          conan build . --build=missing -s compiler.cppstd=20 -s build_type=Debug ${{ matrix.conan-args }}
+          conan build . --build=missing -s compiler.cppstd=20 -s build_type=Debug \
+                -c tools.build:cflags=-static \
+                -c tools.build:cxxflags=-static \
+                -c tools.build:exelinkflags=-static \
 
       - name: Package
         shell: bash
