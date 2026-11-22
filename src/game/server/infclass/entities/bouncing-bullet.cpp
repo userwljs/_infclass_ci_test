@@ -1,0 +1,168 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include <base/math.h>
+#include <base/vmath.h>
+#include <game/generated/protocol.h>
+#include <game/server/gamecontext.h>
+
+#include <game/infclass/damage_type.h>
+#include <game/server/infclass/ic_gamecontroller.h>
+
+#include "bouncing-bullet.h"
+#include "ic_character.h"
+
+int CBouncingBullet::EntityId{};
+
+CBouncingBullet::CBouncingBullet(CGameContext *pGameContext, int Owner, vec2 Pos, vec2 Dir) :
+	CIcEntity(pGameContext, EntityId, Pos, Owner)
+{
+	m_ActualPos = Pos;
+	m_ActualDir = Dir;
+	m_Direction = Dir;
+	m_StartTick = Server()->Tick();
+	SetLifespan(2.0f);
+	m_BounceLeft = 3; // the number of time that a bullet can bounce. It's usefull to remove bullets laying on the ground
+	m_DistanceLeft = 1200; // the max distance a bullet can travel
+
+	GameWorld()->InsertEntity(this);
+}
+
+vec2 CBouncingBullet::GetPos(float Time) const
+{
+	float Curvature = GameServer()->Tuning()->m_ShotgunCurvature;
+	float Speed = GameServer()->Tuning()->m_ShotgunSpeed;
+
+	return CalcPos(m_Pos, m_Direction, Curvature, Speed, Time);
+}
+
+void CBouncingBullet::TickPaused()
+{
+	CIcEntity::TickPaused();
+
+	m_StartTick++;
+}
+
+void CBouncingBullet::Tick()
+{
+	CIcEntity::Tick();
+
+	if(IsMarkedForDestroy())
+		return;
+
+	float Pt = (Server()->Tick() - m_StartTick - 1) / (float)Server()->TickSpeed();
+	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+	vec2 PrevPos = GetPos(Pt);
+	vec2 CurPos = GetPos(Ct);
+
+	m_ActualPos = CurPos;
+	m_ActualDir = normalize(CurPos - PrevPos);
+
+	m_DistanceLeft -= distance(CurPos, PrevPos);
+
+	if(GameLayerClipped(CurPos) || m_BounceLeft < 0 || m_DistanceLeft < 0.0f)
+	{
+		GameWorld()->DestroyEntity(this);
+		return;
+	}
+
+	vec2 NewPos;
+	int Collide = GameServer()->Collision()->IntersectLineWeapon(PrevPos, CurPos, nullptr, &NewPos);
+
+	const float ProjectileRadius = 6.0f;
+	const CIcCharacter *pOwnerChar = GetOwnerCharacter();
+	const bool IsInfected = pOwnerChar && pOwnerChar->IsInfected();
+	CharacterFilter Filter = IsInfected ? CIcCharacter::GetHumansFilter() : CIcCharacter::GetInfectedFilter();
+	CIcCharacter *pTargetChr = CIcCharacter::GetInstance(GameWorld()->IntersectCharacter(PrevPos, NewPos, ProjectileRadius, NewPos, Filter));
+
+	if(pTargetChr)
+	{
+		if(pTargetChr->IsReflectingProjectiles())
+		{
+			vec2 vel;
+			vel.x = m_Direction.x;
+			vel.y = m_Direction.y + 2 * GameServer()->Tuning()->m_ShotgunCurvature / 10000 * Ct * GameServer()->Tuning()->m_ShotgunSpeed;
+			float Speed = length(vel);
+			vec2 NormalizedVelocity = vel / Speed;
+
+			const vec2 RadiusVector = normalize(NewPos - pTargetChr->GetPos());
+			m_Direction = (NormalizedVelocity + RadiusVector * 2) * Speed * 0.67f;
+
+			OnCollided(NewPos);
+		}
+		else
+		{
+			const float Damage = 1.33f;
+			const float Force = GameController()->GetWeaponForce(EInfclassWeapon::RICOCHET_SHOTGUN);
+			if(pTargetChr)
+			{
+				pTargetChr->TakeDamage(m_Direction * Force, Damage, GetOwner(), EDamageType::BIOLOGIST_SHOTGUN);
+			}
+
+			GameWorld()->DestroyEntity(this);
+		}
+		return;
+	}
+
+	if(Collide)
+	{
+		// Thanks to TeeBall 0.6
+		bool CollideX = GameServer()->Collision()->IntersectLineWeapon(PrevPos, vec2{CurPos.x, NewPos.y});
+		bool CollideY = GameServer()->Collision()->IntersectLineWeapon(PrevPos, vec2{NewPos.x, CurPos.y});
+
+		vec2 vel;
+		vel.x = m_Direction.x;
+		vel.y = m_Direction.y + 2 * GameServer()->Tuning()->m_ShotgunCurvature / 10000 * Ct * GameServer()->Tuning()->m_ShotgunSpeed;
+
+		if(CollideX && !CollideY)
+		{
+			m_Direction.x = -vel.x;
+			m_Direction.y = vel.y;
+		}
+		else if(!CollideX && CollideY)
+		{
+			m_Direction.x = vel.x;
+			m_Direction.y = -vel.y;
+		}
+		else
+		{
+			m_Direction.x = -vel.x;
+			m_Direction.y = -vel.y;
+		}
+
+		OnCollided(NewPos);
+	}
+}
+
+void CBouncingBullet::FillInfo(CNetObj_Projectile *pProj) const
+{
+	pProj->m_X = (int)m_Pos.x;
+	pProj->m_Y = (int)m_Pos.y;
+	pProj->m_VelX = (int)(m_Direction.x * 100.0f);
+	pProj->m_VelY = (int)(m_Direction.y * 100.0f);
+	pProj->m_StartTick = m_StartTick;
+	pProj->m_Type = WEAPON_SHOTGUN;
+}
+
+void CBouncingBullet::Snap(int SnappingClient)
+{
+	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+
+	if(NetworkClipped(SnappingClient, GetPos(Ct)) || !GetId().has_value())
+		return;
+
+	CNetObj_Projectile *pProj = Server()->SnapNewItem<CNetObj_Projectile>(GetId().value());
+	if(pProj)
+		FillInfo(pProj);
+}
+
+void CBouncingBullet::OnCollided(const vec2 &At)
+{
+	m_Pos = At;
+	m_Direction.x *= (100 - 50) / 100.0;
+	m_Direction.y *= (100 - 50) / 100.0;
+	m_StartTick = Server()->Tick();
+
+	m_ActualPos = m_Pos;
+	m_ActualDir = normalize(m_Direction);
+	m_BounceLeft--;
+}

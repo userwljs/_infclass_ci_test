@@ -1,0 +1,273 @@
+#ifndef BASE_TL_IC_ARRAY_H
+#define BASE_TL_IC_ARRAY_H
+
+#include <base/dbg.h>
+#include <base/str.h>
+
+#include <cstddef>
+#include <initializer_list>
+#include <iterator>
+#include <optional>
+
+template<class T, int StackCapacity>
+class icArray
+{
+	static_assert(StackCapacity > 0, "StackCapacity must be greater than zero");
+
+public:
+	constexpr icArray() = default;
+	constexpr icArray(std::initializer_list<T> list);
+	icArray(T (&Array)[StackCapacity]);
+
+	constexpr const T &At(std::size_t Index) const
+	{
+		dbg_assert(Index < m_Size, "Index out of bounds: the size is %" PRIzu " but the index is %" PRIzu, m_Size, Index);
+		return m_Data[Index];
+	}
+	constexpr const T &operator[](std::size_t Index) const
+	{
+		dbg_assert(Index < m_Size, "Index out of bounds: the size is %" PRIzu " but the index is %" PRIzu, m_Size, Index);
+		return m_Data[Index];
+	}
+	T &operator[](std::size_t Index)
+	{
+		dbg_assert(Index < m_Size, "Index out of bounds: the size is %" PRIzu " but the index is %" PRIzu, m_Size, Index);
+		return m_Data[Index];
+	}
+
+	T *Data() { return &m_Data[0]; }
+	const T *Data() const { return &m_Data[0]; }
+
+	T &First()
+	{
+		dbg_assert(m_Size > 0, "Index out of bounds: the size is 0");
+		return m_Data[0];
+	}
+	T &Last()
+	{
+		dbg_assert(m_Size > 0, "Index out of bounds: the size is 0");
+		return m_Data[m_Size - 1];
+	}
+
+	constexpr const T &First() const
+	{
+		dbg_assert(m_Size > 0, "Index out of bounds: the size is 0");
+		return m_Data[0];
+	}
+	constexpr const T &Last() const
+	{
+		dbg_assert(m_Size > 0, "Index out of bounds: the size is 0");
+		return m_Data[m_Size - 1];
+	}
+
+	void erase(const T *pItem);
+
+	constexpr std::size_t Size() const;
+
+	void Resize(std::size_t NewSize);
+
+	constexpr std::size_t Capacity() const;
+	static constexpr std::size_t ArrayCapacity();
+
+	bool IsEmpty() const;
+
+	std::optional<std::size_t> IndexOf(const T &Item) const;
+
+	constexpr bool Contains(const T &Item) const;
+
+	constexpr void Add(const T &Value);
+	constexpr void AddWithOverwrite(const T &Value);
+	constexpr void InsertAt(std::size_t Index, const T &Value);
+
+	void RemoveLast();
+
+	bool RemoveOne(const T &Item);
+
+	void RemoveAt(std::size_t Index);
+
+	void Clear();
+
+	T *begin() { return &m_Data[0]; }
+	T *end() { return &m_Data[m_Size]; }
+
+	auto rbegin() { return std::reverse_iterator(end()); }
+	auto rend() { return std::reverse_iterator(begin()); }
+
+	const T *begin() const { return &m_Data[0]; }
+	const T *end() const { return &m_Data[m_Size]; }
+
+	using size_type = std::size_t;
+
+protected:
+	T m_Data[StackCapacity] = {};
+	std::size_t m_Size = 0;
+};
+
+namespace std {
+
+template<class T, int StackCapacity, typename Predicate>
+inline typename icArray<T, StackCapacity>::size_type
+erase_if(icArray<T, StackCapacity> &container, Predicate predicate)
+{
+	const auto HadSize = container.Size();
+
+	for(auto it = container.rbegin(); it != container.rend(); ++it)
+	{
+		if(predicate(*it))
+			container.erase(&*it);
+	}
+
+	return HadSize - container.Size();
+}
+
+} // namespace std
+
+template<class T, int StackCapacity>
+inline constexpr icArray<T, StackCapacity>::icArray(std::initializer_list<T> list)
+{
+	for(const T &Element : list)
+	{
+		Add(Element);
+	}
+}
+
+template<class T, int StackCapacity>
+inline icArray<T, StackCapacity>::icArray(T (&Array)[StackCapacity])
+{
+	for(const T &Element : Array)
+	{
+		Add(Element);
+	}
+}
+
+template<class T, int StackCapacity>
+void icArray<T, StackCapacity>::erase(const T *pItem)
+{
+	dbg_assert(pItem >= begin() && pItem < end(),
+	           "Addr out of bounds: expected addr >= %p && addr < %p but the addr is %p",
+	           begin(), end(), static_cast<const void *>(pItem));
+	std::ptrdiff_t Offset = pItem - begin();
+	RemoveAt(Offset);
+}
+
+template<class T, int StackCapacity>
+constexpr std::size_t icArray<T, StackCapacity>::Size() const
+{
+	return m_Size;
+}
+
+template<class T, int StackCapacity>
+void icArray<T, StackCapacity>::Resize(std::size_t NewSize)
+{
+	dbg_assert(NewSize <= Capacity(),
+	           "New size is greater than capacity: the stack capacity is %" PRIzu " but the new size is %" PRIzu,
+	           Capacity(), NewSize);
+	m_Size = NewSize;
+}
+
+template<class T, int StackCapacity>
+constexpr std::size_t icArray<T, StackCapacity>::Capacity() const
+{
+	return StackCapacity;
+}
+
+template<class T, int StackCapacity>
+constexpr std::size_t icArray<T, StackCapacity>::ArrayCapacity()
+{
+	return StackCapacity;
+}
+
+template<class T, int StackCapacity>
+bool icArray<T, StackCapacity>::IsEmpty() const
+{
+	return m_Size == 0;
+}
+
+template<class T, int StackCapacity>
+std::optional<std::size_t> icArray<T, StackCapacity>::IndexOf(const T &Item) const
+{
+	for(std::size_t i = 0; i < Size(); ++i)
+	{
+		if(m_Data[i] == Item)
+			return i;
+	}
+	return {};
+}
+
+template<class T, int StackCapacity>
+inline constexpr bool icArray<T, StackCapacity>::Contains(const T &Item) const
+{
+	return IndexOf(Item) >= 0;
+}
+
+template<class T, int StackCapacity>
+inline constexpr void icArray<T, StackCapacity>::Add(const T &Value)
+{
+	dbg_assert(m_Size < Capacity(), "The array is full: capacity is %" PRIzu, Capacity());
+	m_Data[m_Size] = Value;
+	++m_Size;
+}
+
+template<class T, int StackCapacity>
+inline constexpr void icArray<T, StackCapacity>::AddWithOverwrite(const T &Value)
+{
+	if(m_Size == StackCapacity)
+		RemoveAt(0);
+
+	Add(Value);
+}
+
+template<class T, int StackCapacity>
+inline constexpr void icArray<T, StackCapacity>::InsertAt(std::size_t Index, const T &Value)
+{
+	if(Index > m_Size)
+		return;
+
+	if(m_Size > 0)
+	{
+		for(std::size_t i = m_Size - 1; i > Index; --i)
+		{
+			std::swap(m_Data[i + 1], m_Data[i]);
+		}
+	}
+	m_Data[Index] = Value;
+	++m_Size;
+}
+
+template<class T, int StackCapacity>
+void icArray<T, StackCapacity>::RemoveLast()
+{
+	dbg_assert(m_Size > 0, "Array is empty");
+	--m_Size;
+}
+
+template<class T, int StackCapacity>
+bool icArray<T, StackCapacity>::RemoveOne(const T &Item)
+{
+	auto OptIndex = IndexOf(Item);
+	if(!OptIndex.has_value())
+		return false;
+
+	RemoveAt(OptIndex.value());
+	return true;
+}
+
+template<class T, int StackCapacity>
+void icArray<T, StackCapacity>::RemoveAt(std::size_t Index)
+{
+	dbg_assert(Index < m_Size,
+	           "Index out of bounds: the size is %" PRIzu " but the index is %" PRIzu, m_Size, Index);
+	for(std::size_t i = Index; i < m_Size - 1; ++i)
+	{
+		m_Data[i] = m_Data[i + 1];
+	}
+	--m_Size;
+}
+
+template<class T, int StackCapacity>
+void icArray<T, StackCapacity>::Clear()
+{
+	m_Size = 0;
+}
+
+#endif // BASE_TL_IC_ARRAY_H

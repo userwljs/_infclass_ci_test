@@ -1,0 +1,233 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include <base/math.h>
+#include <base/vmath.h>
+#include <engine/shared/config.h>
+#include <game/generated/protocol.h>
+#include <game/infclass/damage_type.h>
+#include <game/server/gamecontext.h>
+#include <game/server/infclass/classes/ic_playerclass.h>
+#include <game/server/infclass/classes/infected/infected.h>
+#include <game/server/infclass/ic_gamecontroller.h>
+#include <game/server/infclass/ic_player.h>
+#include <game/server/infclass/snap_filter.h>
+
+#include "engineer-wall.h"
+#include "game/server/infclass/entities/ic_entity.h"
+#include "game/server/infclass/player_upgrades.h"
+#include "ic_character.h"
+
+static const float g_BarrierMaxLength = 300.0;
+static const float g_BarrierRadius = 0.0;
+
+int CEngineerWall::EntityId{};
+
+CEngineerWall::CEngineerWall(CGameContext *pGameContext, vec2 Pos1, int Owner) : CPlacedObject(pGameContext, EntityId, Pos1, Owner)
+{
+	m_InfClassObjectType = INFCLASS_OBJECT_TYPE_LASER_WALL;
+	m_MaxLength = g_BarrierMaxLength;
+
+	m_EndPointId = Server()->SnapNewId();
+
+	GameWorld()->InsertEntity(this);
+}
+
+CEngineerWall::~CEngineerWall()
+{
+	if(m_EndPointId.has_value())
+		Server()->SnapFreeId(m_EndPointId.value());
+}
+
+void CEngineerWall::Tick()
+{
+	CPlacedObject::Tick();
+
+	if(IsMarkedForDestroy())
+		return;
+
+	if(!HasSecondPosition())
+	{
+		m_SnapStartTick = Server()->Tick();
+		return;
+	}
+
+	if(m_WallFlashTicks > 0)
+		m_WallFlashTicks--;
+
+	// Find other players
+	for(TEntityPtr<CIcCharacter> p = GameWorld()->FindFirst<CIcCharacter>(); p; ++p)
+	{
+		if(p->IsHuman())
+			continue;
+
+		vec2 IntersectPos;
+		if(!closest_point_on_line(m_Pos, m_Pos2.value(), p->m_Pos, IntersectPos))
+			continue;
+
+		float Len = distance(p->m_Pos, IntersectPos);
+		if(Len < p->m_ProximityRadius + g_BarrierRadius)
+		{
+			if(GameController()->GetRoundType() == ERoundType::Survival)
+			{
+				if(Server()->Tick() >= m_PlayerNextDamageTick[p->GetCid()] && !p->IsInDeepDefence())
+					OnSurvivalHitInfected(p);
+			}
+			else
+				OnHitInfected(p);
+		}
+	}
+
+	PrepareSnapData();
+}
+
+void CEngineerWall::TickPaused()
+{
+	CPlacedObject::TickPaused();
+
+	++m_SnapStartTick;
+
+	for(int &PlayerNextDamageTick : m_PlayerNextDamageTick)
+		PlayerNextDamageTick++;
+}
+
+void CEngineerWall::Snap(int SnappingClient)
+{
+	if(!DoSnapForClient(SnappingClient))
+		return;
+
+	if(!HasSecondPosition())
+	{
+		if(!SnapFiltersPassed(this, SnappingClient, EFilterFlag::Follower | EFilterFlag::SameTeam | EFilterFlag::Demo | EFilterFlag::Restricted))
+		{
+			return;
+		}
+	}
+
+	if(Server()->GetClientInfclassVersion(SnappingClient))
+	{
+		CNetObj_InfClassObject *pInfClassObject = SnapInfClassObject();
+		if(!pInfClassObject)
+			return;
+
+		if(!HasSecondPosition())
+		{
+			// Snap fake second position to fix OwnerIcon position
+			pInfClassObject->m_EndTick = -1;
+			pInfClassObject->m_Flags |= INFCLASS_OBJECT_FLAG_HAS_SECOND_POSITION;
+			pInfClassObject->m_X2 = pInfClassObject->m_X;
+			pInfClassObject->m_Y2 = pInfClassObject->m_Y - 1;
+		}
+	}
+
+	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
+	CSnapContext Context(SnappingClientVersion);
+
+	GameServer()->SnapLaserObject(Context, GetId().value(), m_Pos, m_Pos2.value_or(m_Pos), m_SnapStartTick, GetOwner());
+
+	if(HasSecondPosition())
+	{
+		if(m_EndPointId.has_value())
+			GameServer()->SnapLaserObject(Context, m_EndPointId.value(), m_Pos2.value(), m_Pos2.value(), Server()->Tick(), GetOwner());
+	}
+}
+
+void CEngineerWall::OnHitInfected(CIcCharacter *pCharacter)
+{
+	CInfClassInfected *pInfected = CInfClassInfected::GetInstance(pCharacter);
+
+	if(pCharacter->GetPlayer() && pInfected)
+	{
+		pInfected->OnLaserWall();
+
+		if(!pCharacter->CanDie())
+		{
+			return;
+		}
+
+		int LifeSpanReducer = ((Server()->TickSpeed() * Config()->m_InfBarrierTimeReduce) / 100);
+		m_WallFlashTicks = 10;
+
+		if(pCharacter->GetPlayerClass() == EPlayerClass::Ghoul)
+		{
+			float Factor = pInfected->GetGhoulPercent();
+			LifeSpanReducer += Server()->TickSpeed() * 5.0f * Factor;
+		}
+
+		if(m_EndTick.has_value())
+		{
+			m_EndTick.value() -= LifeSpanReducer;
+		}
+	}
+
+	pCharacter->Die(GetOwner(), EDamageType::LASER_WALL);
+}
+
+void CEngineerWall::OnSurvivalHitInfected(CIcCharacter *pCharacter)
+{
+	const CInfClassInfected *pInfected = CInfClassInfected::GetInstance(pCharacter);
+	if(!pCharacter->GetPlayer() || !pInfected)
+		return;
+	m_WallFlashTicks = 10;
+	int LifeSpanReducer = (Server()->TickSpeed() * 150) / 100;
+
+	auto *pOwnerPlayer = GameController()->GetPlayer(GetOwner());
+	const CIcPlayerClass *pOwnerCharacterClass = nullptr;
+	if(pOwnerPlayer)
+		pOwnerCharacterClass = pOwnerPlayer->GetCharacterClass();
+
+	if(pCharacter->GetPlayerClass() == EPlayerClass::Ghoul)
+	{
+		const float Factor = pInfected->GetGhoulPercent();
+		LifeSpanReducer += Server()->TickSpeed() * 5.0f * Factor;
+	}
+
+	if(m_EndTick.has_value())
+	{
+		if(pOwnerCharacterClass && pOwnerCharacterClass->HasUpgrade(EUpgradeType::EngineerWallTimeReductionDecrease))
+			m_EndTick.value() -= LifeSpanReducer / 4;
+		else
+			m_EndTick.value() -= LifeSpanReducer;
+	}
+
+	if(pOwnerCharacterClass && pOwnerCharacterClass->HasUpgrade(EUpgradeType::EngineerWallDamage))
+		pCharacter->TakeDamage(vec2(0.0f, 0.0f), 9.0f, GetOwner(), EDamageType::LASER_WALL);
+	else
+		pCharacter->TakeDamage(vec2(0.0f, 0.0f), 5.0f, GetOwner(), EDamageType::LASER_WALL);
+	m_PlayerNextDamageTick[pCharacter->GetCid()] = Server()->Tick() + Server()->TickSpeed() * 1;
+}
+
+void CEngineerWall::PrepareSnapData()
+{
+	const int RemainingTicks = m_EndTick.has_value() ? (m_EndTick.value() - Server()->Tick()) : 1000;
+
+	// Laser dieing animation
+	int LifeDiff = 0;
+	if(m_WallFlashTicks > 0) // flash laser for a few ticks when zombie jumps
+		LifeDiff = 5;
+	else if(RemainingTicks < 1 * Server()->TickSpeed())
+		LifeDiff = random_int(4, 5);
+	else if(RemainingTicks < 2 * Server()->TickSpeed())
+		LifeDiff = random_int(3, 5);
+	else if(RemainingTicks < 3 * Server()->TickSpeed())
+		LifeDiff = random_int(2, 4);
+	else if(RemainingTicks < 4 * Server()->TickSpeed())
+		LifeDiff = random_int(1, 3);
+	else if(RemainingTicks < 5 * Server()->TickSpeed())
+		LifeDiff = random_int(0, 2);
+	else if(RemainingTicks < 6 * Server()->TickSpeed())
+		LifeDiff = random_int(0, 1);
+	else if(RemainingTicks < 7 * Server()->TickSpeed())
+		LifeDiff = (random_prob(3.0f / 4.0f)) ? 1 : 0;
+	else if(RemainingTicks < 8 * Server()->TickSpeed())
+		LifeDiff = (random_prob(5.0f / 6.0f)) ? 1 : 0;
+	else if(RemainingTicks < 9 * Server()->TickSpeed())
+		LifeDiff = (random_prob(5.0f / 6.0f)) ? 0 : -1;
+	else if(RemainingTicks < 10 * Server()->TickSpeed())
+		LifeDiff = (random_prob(5.0f / 6.0f)) ? 0 : -1;
+	else if(RemainingTicks < 11 * Server()->TickSpeed())
+		LifeDiff = (random_prob(5.0f / 6.0f)) ? -1 : -Server()->TickSpeed() * 2;
+	else
+		LifeDiff = -Server()->TickSpeed() * 2;
+
+	m_SnapStartTick = Server()->Tick() - LifeDiff;
+}

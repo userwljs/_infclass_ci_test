@@ -1,0 +1,48 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include "flyingpoint.h"
+
+#include <game/server/infclass/classes/ic_playerclass.h>
+#include <game/server/infclass/entities/ic_character.h>
+#include <game/server/infclass/ic_gamecontroller.h>
+
+int CFlyingPoint::EntityId{};
+
+CFlyingPoint::CFlyingPoint(CGameContext *pGameContext, vec2 Pos, int TrackedPlayer, int Points, vec2 InitialVel) : CIcEntity(pGameContext, EntityId, Pos, TrackedPlayer, 24.0f)
+{
+	m_InitialVel = InitialVel;
+	m_Points = Points;
+	m_InitialAmount = 1.0f;
+	GameWorld()->InsertEntity(this);
+}
+
+void CFlyingPoint::Tick()
+{
+	CIcCharacter *OwnerChar = GetOwnerCharacter();
+	if(OwnerChar)
+	{
+		float Dist = distance(m_Pos, OwnerChar->GetPos());
+		if(Dist < GetProximityRadius())
+		{
+			OwnerChar->GetClass()->OnFloatingPointCollected(m_Points);
+			GameWorld()->DestroyEntity(this);
+		}
+		else
+		{
+			vec2 Dir = normalize(OwnerChar->GetPos() - m_Pos);
+			m_Pos += Dir * clamp(Dist, 0.0f, 16.0f) * (1.0f - m_InitialAmount) + m_InitialVel * m_InitialAmount;
+
+			m_InitialAmount *= 0.98f;
+		}
+	}
+	else
+	{
+		MarkForDestroy();
+	}
+}
+
+void CFlyingPoint::Snap(int SnappingClient)
+{
+	if(m_Id.has_value())
+		GameController()->SendHammerDot(GetPos(), m_Id.value());
+}

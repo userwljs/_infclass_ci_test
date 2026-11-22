@@ -1,0 +1,181 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include "scatter-grenade.h"
+
+#include <base/math.h>
+#include <base/vmath.h>
+#include <game/generated/protocol.h>
+#include <game/server/gamecontext.h>
+
+#include <game/infclass/damage_type.h>
+#include <game/server/infclass/entities/growingexplosion.h>
+#include <game/server/infclass/entities/ic_character.h>
+
+int CScatterGrenade::EntityId{};
+
+CScatterGrenade::CScatterGrenade(CGameContext *pGameContext, int Owner, vec2 Pos, vec2 Dir) :
+	CIcEntity(pGameContext, EntityId, Pos, Owner)
+{
+	m_ActualPos = Pos;
+	m_ActualDir = Dir;
+	m_Direction = Dir;
+	m_StartTick = Server()->Tick();
+
+	GameWorld()->InsertEntity(this);
+}
+
+vec2 CScatterGrenade::GetPos(float Time) const
+{
+	float Curvature = GameServer()->Tuning()->m_GrenadeCurvature;
+	float Speed = GameServer()->Tuning()->m_GrenadeSpeed;
+
+	return CalcPos(m_Pos, m_Direction, Curvature, Speed, Time);
+}
+
+void CScatterGrenade::TickPaused()
+{
+	m_StartTick++;
+}
+
+void CScatterGrenade::Tick()
+{
+	float Pt = (Server()->Tick() - m_StartTick - 1) / (float)Server()->TickSpeed();
+	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+	vec2 PrevPos = GetPos(Pt);
+	vec2 CurPos = GetPos(Ct);
+
+	m_ActualPos = CurPos;
+	m_ActualDir = normalize(CurPos - PrevPos);
+
+	if(GameLayerClipped(CurPos))
+	{
+		GameWorld()->DestroyEntity(this);
+		return;
+	}
+
+	vec2 NewPos;
+	int Collide = GameServer()->Collision()->IntersectLineWeapon(PrevPos, CurPos, nullptr, &NewPos);
+
+	if(m_ExplodeOnContact)
+	{
+		const float ProjectileRadius = 6.0f;
+		const CIcCharacter *pOwnerChar = GetOwnerCharacter();
+		const bool IsInfected = pOwnerChar && pOwnerChar->IsInfected();
+		CharacterFilter OnlyOtherTeamFilter = IsInfected ? CIcCharacter::GetHumansFilter() : CIcCharacter::GetInfectedFilter();
+		const CIcCharacter *pHit = CIcCharacter::GetInstance(GameWorld()->IntersectCharacter(PrevPos, NewPos, ProjectileRadius, NewPos, OnlyOtherTeamFilter));
+
+		if(pHit)
+		{
+			if(pHit->IsReflectingProjectiles())
+			{
+				vec2 vel;
+				vel.x = m_Direction.x;
+				vel.y = m_Direction.y + 2 * GameServer()->Tuning()->m_GrenadeCurvature / 10000 * Ct * GameServer()->Tuning()->m_GrenadeSpeed;
+				float Speed = length(vel);
+				vec2 NormalizedVelocity = vel / Speed;
+
+				const vec2 RadiusVector = normalize(NewPos - pHit->GetPos());
+				m_Direction = (NormalizedVelocity + RadiusVector * 2) * Speed * 0.67f;
+
+				OnCollided(NewPos);
+			}
+			else
+			{
+				Explode();
+			}
+			return;
+		}
+	}
+
+	if(Collide)
+	{
+		if(m_IsFlashGrenade)
+		{
+			Explode();
+		}
+
+		// Thanks to TeeBall 0.6
+		bool CollideX = GameServer()->Collision()->IntersectLineWeapon(PrevPos, vec2{CurPos.x, NewPos.y});
+		bool CollideY = GameServer()->Collision()->IntersectLineWeapon(PrevPos, vec2{NewPos.x, CurPos.y});
+
+		vec2 vel;
+		vel.x = m_Direction.x;
+		vel.y = m_Direction.y + 2 * GameServer()->Tuning()->m_GrenadeCurvature / 10000 * Ct * GameServer()->Tuning()->m_GrenadeSpeed;
+
+		if(CollideX && !CollideY)
+		{
+			m_Direction.x = -vel.x;
+			m_Direction.y = vel.y;
+		}
+		else if(!CollideX && CollideY)
+		{
+			m_Direction.x = vel.x;
+			m_Direction.y = -vel.y;
+		}
+		else
+		{
+			m_Direction.x = -vel.x;
+			m_Direction.y = -vel.y;
+		}
+
+		OnCollided(NewPos);
+	}
+}
+
+void CScatterGrenade::FillInfo(CNetObj_Projectile *pProj) const
+{
+	pProj->m_X = (int)m_Pos.x;
+	pProj->m_Y = (int)m_Pos.y;
+	pProj->m_VelX = (int)(m_Direction.x * 100.0f);
+	pProj->m_VelY = (int)(m_Direction.y * 100.0f);
+	pProj->m_StartTick = m_StartTick;
+	pProj->m_Type = WEAPON_GRENADE;
+}
+
+void CScatterGrenade::Snap(int SnappingClient)
+{
+	float Ct = (Server()->Tick() - m_StartTick) / (float)Server()->TickSpeed();
+
+	if(NetworkClipped(SnappingClient, GetPos(Ct)) || !GetId().has_value())
+		return;
+
+	CNetObj_Projectile *pProj = Server()->SnapNewItem<CNetObj_Projectile>(GetId().value());
+	if(pProj)
+		FillInfo(pProj);
+}
+
+void CScatterGrenade::Explode()
+{
+	if(m_IsFlashGrenade)
+	{
+		new CGrowingExplosion(GameServer(), m_ActualPos, m_ActualDir, GetOwner(), 4, EDamageType::STUNNING_GRENADE);
+	}
+	else
+	{
+		new CGrowingExplosion(GameServer(), m_ActualPos, m_ActualDir, GetOwner(), 4, EDamageType::MERCENARY_GRENADE);
+	}
+
+	GameWorld()->DestroyEntity(this);
+}
+
+void CScatterGrenade::FlashGrenade()
+{
+	m_IsFlashGrenade = true;
+	m_ExplodeOnContact = true;
+}
+
+void CScatterGrenade::ExplodeOnContact()
+{
+	m_ExplodeOnContact = true;
+}
+
+void CScatterGrenade::OnCollided(const vec2 &At)
+{
+	m_Pos = At;
+	m_Direction.x *= (100 - 50) / 100.0;
+	m_Direction.y *= (100 - 50) / 100.0;
+	m_StartTick = Server()->Tick();
+
+	m_ActualPos = m_Pos;
+	m_ActualDir = normalize(m_Direction);
+}

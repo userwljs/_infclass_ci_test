@@ -1,0 +1,213 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include "ic_laser.h"
+
+#include <engine/shared/config.h>
+
+#include <game/generated/protocol.h>
+#include <game/infclass/damage_type.h>
+#include <game/infclass/weapons.h>
+#include <game/server/gamecontext.h>
+
+#include <game/server/infclass/entities/ic_character.h>
+#include <game/server/infclass/ic_gamecontroller.h>
+
+#include "growingexplosion.h"
+
+CIcLaser::CIcLaser(CGameContext *pGameContext, vec2 Pos, vec2 Direction, float StartEnergy, int Owner, int Dmg, EInfclassWeapon InfClassWeapon) :
+	CIcEntity(pGameContext, CGameWorld::ENTTYPE_LASER, Pos, Owner), m_Weapon(InfClassWeapon)
+{
+	m_Dmg = Dmg;
+	m_Energy = StartEnergy;
+	m_Dir = Direction;
+	m_MaxBounces = GameServer()->Tuning()->m_LaserBounceNum;
+	m_BounceCost = GameServer()->Tuning()->m_LaserBounceCost;
+	GameWorld()->InsertEntity(this);
+}
+
+bool CIcLaser::HitTarget(vec2 From, vec2 To)
+{
+	vec2 At;
+	CIcCharacter *pOwnerChar = GameController()->GetCharacter(GetOwner());
+	icArray<const CIcCharacter *, 10> IgnoreHits;
+	if(m_IgnoreTarget.has_value())
+	{
+		CIcCharacter *pIgnoreChar = GameController()->GetCharacter(m_IgnoreTarget.value());
+		if(pIgnoreChar)
+		{
+			IgnoreHits.Add(pIgnoreChar);
+		}
+		m_IgnoreTarget.reset();
+	}
+	CharacterFilter HitsFilter = CIcCharacter::GetExceptCharactersFilter(IgnoreHits);
+	const bool IsInfected = pOwnerChar && pOwnerChar->IsInfected();
+	CharacterFilter OnlyOtherTeamFilter = IsInfected ? CIcCharacter::GetHumansFilter() : CIcCharacter::GetInfectedFilter();
+	CharacterFilter CombinedFilter = CIcCharacter::GetFilterAllOff(HitsFilter, OnlyOtherTeamFilter);
+
+	CCharacter *pIntersect = GameWorld()->IntersectCharacter(From, To, 0.f, At, CombinedFilter);
+	CIcCharacter *pHit = CIcCharacter::GetInstance(pIntersect);
+
+	while(pHit)
+	{
+		if(pHit->IsReflectingProjectiles())
+		{
+			const vec2 RadiusVector = normalize(At - pHit->GetPos());
+			m_Dir = m_Dir + RadiusVector * 2;
+
+			// Ignore the target to ensure that the reflected laser
+			// won't hit it at the `At` position on the next Bounce()
+			m_IgnoreTarget = pHit->GetCid();
+			DoReflect(At);
+			return true;
+		}
+
+		IgnoreHits.Add(pHit);
+		bool Confirmed = OnCharacterHit(pHit, At);
+		if(Confirmed)
+		{
+			m_From = From;
+			m_Pos = At;
+			m_Energy = -1;
+			return true;
+		}
+
+		pIntersect = GameWorld()->IntersectCharacter(m_Pos, To, 0.f, At, CombinedFilter);
+		pHit = CIcCharacter::GetInstance(pIntersect);
+	}
+
+	return false;
+}
+
+bool CIcLaser::OnCharacterHit(CIcCharacter *pHit, const vec2 &At)
+{
+	float DamageLeft = 0;
+	pHit->TakeDamage(vec2(0.f, 0.f), m_Dmg, GetOwner(), GetDamageType(), &DamageLeft);
+	m_Dmg = DamageLeft / 2;
+
+	if(m_Weapon == EInfclassWeapon::LOOPER_LASER)
+	{
+		const float EffectDurationInSeconds = Config()->m_InfSlowMotionGunDuration * 0.1f;
+		pHit->SlowMotionEffect(EffectDurationInSeconds, GetOwner());
+		GameServer()->SendEmoticon(pHit->GetCid(), EMOTICON_EXCLAMATION);
+	}
+
+	return !m_Piercing || (m_Dmg < 1);
+}
+
+void CIcLaser::DoReflect(const vec2 &To)
+{
+	m_From = m_Pos;
+	m_Pos = To;
+
+	m_Energy -= distance(m_From, m_Pos) + m_BounceCost;
+	m_Bounces++;
+
+	if(m_Bounces > m_MaxBounces)
+		m_Energy = -1;
+
+	GameServer()->CreateSound(m_Pos, SOUND_LASER_BOUNCE);
+}
+
+void CIcLaser::DoBounce()
+{
+	m_EvalTick = Server()->Tick();
+
+	if(m_Energy < 0)
+	{
+		if(m_Explosive)
+		{
+			new CGrowingExplosion(GameServer(), m_Pos, vec2(0.0, -1.0), GetOwner(), 1, GetDamageType());
+		}
+
+		GameWorld()->DestroyEntity(this);
+		return;
+	}
+
+	vec2 To = m_Pos + m_Dir * m_Energy;
+
+	if(GameServer()->Collision()->IntersectLineWeapon(m_Pos, To, nullptr, &To))
+	{
+		if(!HitTarget(m_Pos, To))
+		{
+			vec2 TempDir = m_Dir * 4.0f;
+			GameServer()->Collision()->MovePoint(&To, &TempDir, 1.0f, nullptr);
+			m_Dir = normalize(TempDir);
+
+			DoReflect(To);
+		}
+	}
+	else
+	{
+		if(!HitTarget(m_Pos, To))
+		{
+			m_From = m_Pos;
+			m_Pos = To;
+			m_Energy = -1;
+		}
+	}
+}
+
+CIcLaser *CIcLaser::MakeLaser(CGameContext *pGameContext, vec2 Pos, vec2 Direction, float StartEnergy, int Owner, int Dmg, EInfclassWeapon InfClassWeapon)
+{
+	CIcLaser *pLaser = new CIcLaser(pGameContext, Pos, Direction, StartEnergy, Owner, Dmg, InfClassWeapon);
+	pLaser->DoBounce();
+	return pLaser;
+}
+
+void CIcLaser::Tick()
+{
+	if(Server()->Tick() > m_EvalTick + (Server()->TickSpeed() * GameServer()->Tuning()->m_LaserBounceDelay) / 1000.0f)
+		DoBounce();
+}
+
+void CIcLaser::TickPaused()
+{
+	++m_EvalTick;
+}
+
+void CIcLaser::Snap(int SnappingClient)
+{
+	if(!GetId().has_value())
+		return;
+	if(NetworkClipped(SnappingClient) && NetworkClipped(SnappingClient, m_From))
+		return;
+
+	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
+	CSnapContext Context(SnappingClientVersion);
+	GameServer()->SnapLaserObject(Context, GetId().value(), m_Pos, m_From, m_EvalTick, GetOwner(), m_SnapLaserType);
+}
+
+void CIcLaser::SetExplosive(bool Explosive)
+{
+	m_Explosive = Explosive;
+}
+
+void CIcLaser::SetPiercing(bool Piercing)
+{
+	m_Piercing = Piercing;
+}
+
+void CIcLaser::SetSnapType(int LaserType)
+{
+	m_SnapLaserType = LaserType;
+}
+
+EDamageType CIcLaser::GetDamageType() const
+{
+	switch(m_Weapon)
+	{
+	case EInfclassWeapon::LOOPER_LASER:
+		return EDamageType::LOOPER_LASER;
+	case EInfclassWeapon::SNIPER_RIFLE:
+		return EDamageType::SNIPER_RIFLE;
+	case EInfclassWeapon::LASER_TURRET:
+		return EDamageType::TURRET_LASER;
+	case EInfclassWeapon::ENGINEER_LASER:
+	case EInfclassWeapon::HERO_LASER:
+		return EDamageType::LASER;
+
+	default:
+		dbg_assert(false, "Invalid GetDamageType() call");
+		return EDamageType::LASER;
+	}
+}

@@ -1,0 +1,44 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#ifndef ENGINE_SHARED_MAP_H
+#define ENGINE_SHARED_MAP_H
+
+#include <base/types.h>
+
+#include "datafile.h"
+#include <engine/map.h>
+
+class IStorage;
+
+class CMap : public IEngineMap
+{
+	CDataFileReader m_DataFile;
+
+public:
+	CMap();
+
+	void *GetData(int Index) override;
+	int GetDataSize(int Index) const override;
+	void *GetDataSwapped(int Index) override;
+	void UnloadData(int Index) override;
+	int NumData() const override;
+
+	void *GetItem(int Index, int *pType = nullptr, int *pId = nullptr) override;
+	int GetItemSize(int Index) override;
+	void GetType(int Type, int *pStart, int *pNum) override;
+	void *FindItem(int Type, int Id) override;
+	int NumItems() const override;
+
+	bool Load(const char *pMapName) override;
+	// Loads a map from an explicit storage, so that a map can be parsed without the kernel
+	bool Load(IStorage *pStorage, const char *pMapName);
+	void Unload() override;
+	bool IsLoaded() const override;
+	IOHANDLE File() const override;
+
+	SHA256_DIGEST Sha256() const override;
+	unsigned Crc() const override;
+	int MapSize() const override;
+};
+
+#endif

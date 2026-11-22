@@ -1,0 +1,1355 @@
+# DDNet-based CMakeLists for InfclassR
+
+cmake_minimum_required(VERSION 3.15...3.29)
+project(InfclassR
+  VERSION 1.9.2
+)
+set(VERSION_SUFFIX "")
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(ORIGINAL_CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH})
+set(OWN_CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+set(CMAKE_MODULE_PATH ${OWN_CMAKE_MODULE_PATH})
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(TARGET_BITS "64")
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  set(TARGET_BITS "32")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+  set(TARGET_OS "windows")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(TARGET_OS "linux")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  set(TARGET_OS "mac")
+endif()
+
+include(CheckCCompilerFlag)
+include(CheckCXXCompilerFlag)
+include(CheckSymbolExists)
+
+check_symbol_exists(__i386 "" TARGET_ARCH_X86_i386)
+if(TARGET_ARCH_X86_i386)
+  set(TARGET_ARCH x86)
+else()
+  set(TARGET_ARCH)
+endif()
+
+set(AUTO_DEPENDENCIES_DEFAULT OFF)
+
+# TODO: Refine this
+if(_USING_CONAN)
+  set(MAXMINDDB_NAME "maxminddb")
+  set(LUAJIT_NAME "luajit")
+else()
+  set(MAXMINDDB_NAME "MaxMindDB")
+  set(LUAJIT_NAME "LuaJIT")
+endif()
+
+find_package(${MAXMINDDB_NAME} QUIET)
+set(GEOLOCATION_DEFAULT ${${MAXMINDDB_NAME}_FOUND})
+
+option(USE_LUA "Use Lua scripting engine" ON)
+option(GEOLOCATION "Enable geolocation support" ${GEOLOCATION_DEFAULT})
+option(TOOLS "Compile tools" ON)
+option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
+option(BUILD_TESTS "Build tests" OFF)
+
+# Set the default build type to Release
+if(NOT(CMAKE_BUILD_TYPE))
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(DBG FALSE)
+else()
+  set(DBG TRUE)
+endif()
+
+if(NOT DEFINED _MSVC_STATIC_CRT)
+  set(_MSVC_STATIC_CRT TRUE)
+endif()
+
+if(MSVC AND _MSVC_STATIC_CRT)
+   # Use static CRT
+  if(DBG)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MTd")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MT")
+  endif()
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+configure_file(src/game/version.h.in ${PROJECT_BINARY_DIR}/src/game/version.h @ONLY)
+
+set(SERVER_EXECUTABLE "Infclass-Server" CACHE STRING "Name of the built server executable")
+
+########################################################################
+# Compiler flags
+########################################################################
+
+function(add_c_compiler_flag_if_supported VARIABLE FLAG)
+  if(ARGC GREATER 2)
+    set(CHECKED_FLAG "${ARGV2}")
+  else()
+    set(CHECKED_FLAG "${FLAG}")
+  endif()
+  string(REGEX REPLACE "[^A-Za-z0-9]" "_" CONFIG_VARIABLE "FLAG_SUPPORTED${CHECKED_FLAG}")
+  check_c_compiler_flag("${CHECKED_FLAG}" ${CONFIG_VARIABLE})
+  if(${CONFIG_VARIABLE})
+    if(${VARIABLE})
+      set("${VARIABLE}" "${${VARIABLE}};${FLAG}" PARENT_SCOPE)
+    else()
+      set("${VARIABLE}" "${FLAG}" PARENT_SCOPE)
+    endif()
+  endif()
+endfunction()
+
+# Force compiler colors on when using ninja. Ninja filters the colors out when
+# it's not printing to a terminal on its own.
+if(CMAKE_GENERATOR STREQUAL "Ninja")
+  add_c_compiler_flag_if_supported(OUR_FLAGS -fdiagnostics-color=always)
+  add_c_compiler_flag_if_supported(OUR_FLAGS -fcolor-diagnostics)
+endif()
+
+if(NOT MSVC)
+  # Protect the stack pointer.
+  # -fstack-protector-all doesn't work on MinGW.
+  add_c_compiler_flag_if_supported(OUR_FLAGS -fstack-protector-all)
+
+  # Inaccurate floating point numbers cause problems on mingw-w64-gcc when
+  # compiling for x86, might cause problems elsewhere. So don't store floats
+  # in registers but keep them at higher accuracy.
+
+  if(TARGET_ARCH STREQUAL "x86")
+    add_c_compiler_flag_if_supported(OUR_FLAGS -ffloat-store)
+  endif()
+
+  if(TARGET_OS STREQUAL "mac")
+    add_c_compiler_flag_if_supported(OUR_FLAGS -stdlib=libc++)
+    add_c_compiler_flag_if_supported(OUR_FLAGS -mmacosx-version-min=13.3)
+  endif()
+
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wall)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN
+    $<$<COMPILE_LANGUAGE:C>:-Wdeclaration-after-statement>
+    -Wdeclaration-after-statement
+  )
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wextra)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wno-unused-parameter)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wno-missing-field-initializers)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wformat=2) # Warn about format strings.
+  add_c_compiler_flag_if_supported(OUR_FLAGS_DEP -Wno-implicit-function-declaration)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wduplicated-cond)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wduplicated-branches)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wlogical-op)
+  add_c_compiler_flag_if_supported(OUR_FLAGS_OWN -Wrestrict)
+  # TODO: Enable for C++ code except gtest
+  #add_cxx_compiler_flag_if_supported(OUR_FLAGS_OWN "-Wuseless-cast")
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror=return-type")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror=switch")
+endif()
+
+if(NOT MSVC)
+  check_c_compiler_flag("-O2;-Wp,-Werror;-D_FORTIFY_SOURCE=2" DEFINE_FORTIFY_SOURCE) # Some distributions define _FORTIFY_SOURCE by themselves.
+endif()
+
+########################################################################
+# COMMON FUNCTIONS
+########################################################################
+
+function(set_glob VAR GLOBBING DIRECTORY) # ...
+  file(${GLOBBING} GLOB_RESULT "${DIRECTORY}/*.c" "${DIRECTORY}/*.cpp" "${DIRECTORY}/*.h")
+  list(SORT GLOB_RESULT)
+  set(FILES)
+  set(RELATIVE_FILES)
+  foreach(file ${ARGN})
+    list(APPEND FILES "${PROJECT_SOURCE_DIR}/${DIRECTORY}/${file}")
+    list(APPEND RELATIVE_FILES "${DIRECTORY}/${file}")
+  endforeach()
+
+  if(NOT FILES STREQUAL GLOB_RESULT)
+    message(AUTHOR_WARNING "${VAR} does not contain every file from directory ${DIRECTORY}")
+    set(LIST_BUT_NOT_GLOB)
+    if(POLICY CMP0057)
+      cmake_policy(SET CMP0057 NEW)
+      foreach(file ${FILES})
+        if(NOT file IN_LIST GLOB_RESULT)
+          list(APPEND LIST_BUT_NOT_GLOB ${file})
+        endif()
+      endforeach()
+      if(LIST_BUT_NOT_GLOB)
+        message(AUTHOR_WARNING "Entries only present in ${VAR}: ${LIST_BUT_NOT_GLOB}")
+      endif()
+      set(GLOB_BUT_NOT_LIST)
+      foreach(file ${GLOB_RESULT})
+        if(NOT file IN_LIST FILES)
+          list(APPEND GLOB_BUT_NOT_LIST ${file})
+        endif()
+      endforeach()
+      if(GLOB_BUT_NOT_LIST)
+        message(AUTHOR_WARNING "Entries only present in ${DIRECTORY}: ${GLOB_BUT_NOT_LIST}")
+      endif()
+      if(NOT LIST_BUT_NOT_GLOB AND NOT GLOB_BUT_NOT_LIST)
+        message(AUTHOR_WARNING "${VAR} is not alphabetically sorted")
+      endif()
+    endif()
+  endif()
+
+  set(${VAR} ${RELATIVE_FILES} PARENT_SCOPE)
+endfunction()
+
+function(set_src VAR GLOBBING DIRECTORY) # ...
+  set_glob(${VAR} ${GLOBBING} ${DIRECTORY} ${ARGN})
+  set(${VAR} ${${VAR}} PARENT_SCOPE)
+  set(CHECKSUM_SRC ${CHECKSUM_SRC} ${${VAR}} PARENT_SCOPE)
+endfunction()
+set(CHECKSUM_SRC)
+
+########################################################################
+# INITIALIZE TARGET LISTS
+########################################################################
+
+set(TARGETS_OWN)
+set(TARGETS_DEP)
+
+set(TARGETS_LINK) # Targets with a linking stage.
+
+########################################################################
+# DEPENDENCIES
+########################################################################
+
+function(set_extra_dirs_lib VARIABLE NAME)
+  set("PATHS_${VARIABLE}_LIBDIR" PARENT_SCOPE)
+  set("HINTS_${VARIABLE}_LIBDIR" PARENT_SCOPE)
+  if(PREFER_BUNDLED_LIBS)
+    set(TYPE HINTS)
+  else()
+    set(TYPE PATHS)
+  endif()
+  if(TARGET_BITS AND TARGET_OS)
+    set(DIR "ddnet-libs/${NAME}/${TARGET_OS}/lib${TARGET_BITS}")
+    set("${TYPE}_${VARIABLE}_LIBDIR" "${DIR}" PARENT_SCOPE)
+    set("EXTRA_${VARIABLE}_LIBDIR" "${DIR}" PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(set_extra_dirs_include VARIABLE NAME LIBRARY)
+  set("PATHS_${VARIABLE}_INCLUDEDIR" PARENT_SCOPE)
+  set("HINTS_${VARIABLE}_INCLUDEDIR" PARENT_SCOPE)
+  is_bundled(IS_BUNDLED "${LIBRARY}")
+  if(IS_BUNDLED)
+    set("HINTS_${VARIABLE}_INCLUDEDIR" "ddnet-libs/${NAME}/include" "ddnet-libs/${NAME}/include/${TARGET_OS}" PARENT_SCOPE)
+  endif()
+endfunction()
+
+if(CMAKE_CROSSCOMPILING)
+  set(CROSSCOMPILING_NO_CMAKE_SYSTEM_PATH NO_CMAKE_SYSTEM_PATH)
+else()
+  set(CROSSCOMPILING_NO_CMAKE_SYSTEM_PATH)
+endif()
+
+function(is_bundled VARIABLE PATH)
+  if(PATH)
+    string(FIND "${PATH}" "${PROJECT_SOURCE_DIR}" LOCAL_PATH_POS)
+    if(LOCAL_PATH_POS EQUAL 0 AND TARGET_BITS AND TARGET_OS)
+      set("${VARIABLE}" ON PARENT_SCOPE)
+    else()
+      set("${VARIABLE}" OFF PARENT_SCOPE)
+    endif()
+  else()
+    set("${VARIABLE}" OFF PARENT_SCOPE)
+  endif()
+endfunction()
+
+include(FetchContent)
+
+if(NOT CMAKE_CROSSCOMPILING)
+  # Check for PkgConfig once so all the other `find_package` calls can do it
+  # quietly.
+  find_package(PkgConfig)
+endif()
+find_package(ZLIB REQUIRED)
+find_package(Crypto)
+find_package(CURL)
+if(DOWNLOAD_GTEST)
+  find_package(Git)
+endif()
+find_package(GTest)
+find_package(PNG)
+find_package(Python3)
+find_package(SQLite3)
+find_package(Threads)
+find_package(Sodium)
+
+if(USE_LUA)
+  find_package(${LUAJIT_NAME} REQUIRED)
+
+  FetchContent_Declare(
+    LuaBridge
+    GIT_REPOSITORY https://github.com/kunitoki/LuaBridge3
+    GIT_TAG a8f60e53e4e49d83fa7249f8111dadbbda3c76b1
+  )
+  FetchContent_MakeAvailable(LuaBridge)
+endif()
+
+if(GEOLOCATION)
+  find_package(${MAXMINDDB_NAME} REQUIRED)
+endif()
+
+if(TARGET_OS AND TARGET_OS STREQUAL "mac")
+  find_program(DMG dmg)
+  find_program(HFSPLUS hfsplus)
+  find_program(NEWFS_HFS newfs_hfs)
+  if(DMG AND HFSPLUS AND NEWFS_HFS)
+    set(DMGTOOLS_FOUND ON)
+  else()
+    set(DMGTOOLS_FOUND OFF)
+  endif()
+
+  find_program(HDIUTIL hdiutil)
+endif()
+
+message(STATUS "******** ${CMAKE_PROJECT_NAME} ********")
+message(STATUS "Target OS: ${TARGET_OS} ${TARGET_BITS}bit")
+message(STATUS "Compiler: ${CMAKE_CXX_COMPILER}")
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+
+message(STATUS "Dependencies:")
+function(show_dependency_status OUTPUT_NAME NAME)
+  if(${NAME}_FOUND)
+    if(${NAME}_BUNDLED)
+      message(STATUS " * ${OUTPUT_NAME} not found (using bundled version)")
+    else()
+      message(STATUS " * ${OUTPUT_NAME} found")
+    endif()
+  else()
+    message(STATUS " * ${OUTPUT_NAME} not found")
+  endif()
+endfunction()
+
+show_dependency_status("Curl" CURL)
+if(TARGET_OS AND TARGET_OS STREQUAL "mac")
+  show_dependency_status("Dmg tools" DMGTOOLS)
+endif()
+if(TARGET_OS AND TARGET_OS STREQUAL "mac")
+  show_dependency_status("Hdiutil" HDIUTIL)
+endif()
+if(DOWNLOAD_GTEST)
+  show_dependency_status("Git" GIT)
+endif()
+show_dependency_status("OpenSSL Crypto" CRYPTO)
+show_dependency_status("PNG" PNG)
+show_dependency_status("Python3" Python3)
+show_dependency_status("SQLite3" SQLite3)
+show_dependency_status("Zlib" ZLIB)
+show_dependency_status("MaxMindDB" ${MAXMINDDB_NAME})
+show_dependency_status("Sodium" Sodium)
+
+if(USE_LUA)
+  show_dependency_status("LuaJIT" ${LUAJIT_NAME})
+endif()
+
+if(NOT(CURL_FOUND))
+  message(SEND_ERROR "You must install Curl to compile ${CMAKE_PROJECT_NAME}")
+endif()
+if(NOT(Python3_FOUND))
+  message(SEND_ERROR "You must install Python to compile ${CMAKE_PROJECT_NAME}")
+endif()
+if(NOT(SQLite3_FOUND))
+  message(SEND_ERROR "You must install SQLite3 to compile ${CMAKE_PROJECT_NAME}")
+endif()
+if(NOT(PNG_FOUND))
+  message(SEND_ERROR "You must install libpng to compile ${CMAKE_PROJECT_NAME}")
+endif()
+if(NOT(CRYPTO_FOUND))
+  message(SEND_ERROR "You must install OpenSSL to compile ${CMAKE_PROJECT_NAME}")
+endif()
+if(NOT(Sodium_FOUND))
+  message(SEND_ERROR "You must install Sodium to compile ${CMAKE_PROJECT_NAME}")
+endif()
+
+if(NOT(GTEST_FOUND))
+  if(DOWNLOAD_GTEST)
+    if(GIT_FOUND)
+      message(STATUS "Automatically downloading GTest to be able to run tests")
+    else()
+      set(DOWNLOAD_GTEST OFF)
+      message(WARNING "To automatically download GTest, you have to install Git")
+    endif()
+  else()
+    message(STATUS "To run the tests, you have to install GTest")
+  endif()
+endif()
+
+if(TARGET_OS STREQUAL "windows")
+  set(PLATFORM_LIBS) # Windows sockets
+  list(APPEND PLATFORM_LIBS shlwapi) # PathIsRelativeW
+  list(APPEND PLATFORM_LIBS version ws2_32) # Windows sockets
+  list(APPEND PLATFORM_LIBS ntdll) # https://github.com/ddnet/ddnet/issues/6725
+elseif(TARGET_OS STREQUAL "mac")
+  find_library(CARBON Carbon)
+  find_library(COCOA Cocoa)
+  find_library(SECURITY Security)
+  set(PLATFORM_LIBS ${CARBON} ${SECURITY})
+else()
+  if(TARGET_OS STREQUAL "linux")
+    set(PLATFORM_LIBS rt) # clock_gettime for glibc < 2.17
+  else()
+    set(PLATFORM_LIBS)
+  endif()
+endif()
+
+########################################################################
+# DOWNLOAD GTEST
+########################################################################
+
+if(NOT(GTEST_FOUND) AND DOWNLOAD_GTEST)
+  set(DDNET_GTEST_VERSION v1.13.0)
+  configure_file(cmake/Download_GTest_CMakeLists.txt.in googletest-download/CMakeLists.txt)
+  execute_process(COMMAND ${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}" .
+    RESULT_VARIABLE result
+    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/googletest-download
+  )
+  if(result)
+    message(WARNING "CMake step for googletest failed: ${result}")
+    set(DOWNLOAD_GTEST OFF)
+  else()
+    execute_process(COMMAND ${CMAKE_COMMAND} --build .
+      RESULT_VARIABLE result
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/googletest-download
+    )
+    if(result)
+      message(WARNING "Build step for googletest failed: ${result}")
+      set(DOWNLOAD_GTEST OFF)
+    else()
+      # Prevent overriding the parent project's compiler/linker settings on Windows
+      set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+      # Add googletest directly to our build. This defines the gtest target.
+      add_subdirectory(
+        ${PROJECT_BINARY_DIR}/googletest-src
+        ${PROJECT_BINARY_DIR}/googletest-build
+        EXCLUDE_FROM_ALL
+      )
+
+      if(MSVC)
+        foreach(target gtest gmock)
+          set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded$<${DBG}:Debug>)
+          # `/w` disables all warnings. This is needed because `gtest` enables
+          # `/WX` (equivalent of `-Werror`) for some reason, breaking builds
+          # when MSVS adds new warnings.
+          target_compile_options(${target} PRIVATE /w)
+        endforeach()
+      endif()
+
+      set(GTEST_LIBRARIES gtest gmock)
+      set(GTEST_INCLUDE_DIRS)
+    endif()
+  endif()
+endif()
+
+########################################################################
+# DEPENDENCY COMPILATION
+########################################################################
+
+# Static dependencies
+set_glob(DEP_JSON_SRC GLOB src/engine/external/json-parser json.c json.h)
+add_library(json EXCLUDE_FROM_ALL OBJECT ${DEP_JSON_SRC})
+
+set_glob(DEP_AHO_CORASICK_SRC GLOB src/engine/external/aho_corasick aho_corasick.hpp)
+add_library(aho_corasick INTERFACE)
+target_sources(aho_corasick INTERFACE ${DEP_AHO_CORASICK_SRC})
+
+list(APPEND TARGETS_DEP json)
+set(DEP_JSON $<TARGET_OBJECTS:json>)
+
+########################################################################
+# COPY DATA AND DLLS
+########################################################################
+
+file(COPY data DESTINATION .)
+file(COPY other/3rd-party-licenses DESTINATION .)
+file(COPY license.txt DESTINATION .)
+
+########################################################################
+# CODE GENERATION
+########################################################################
+
+function(generate_source output_file script_parameter)
+  add_custom_command(OUTPUT ${output_file}
+    COMMAND ${Python3_EXECUTABLE} datasrc/compile.py ${script_parameter}
+      > "${PROJECT_BINARY_DIR}/${output_file}"
+    DEPENDS
+      datasrc/compile.py
+      datasrc/content.py
+      datasrc/datatypes.py
+      datasrc/network.py
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
+endfunction()
+
+function(generate_source7 output_file script_parameter)
+  add_custom_command(OUTPUT ${output_file}
+    COMMAND ${Python3_EXECUTABLE} -m datasrc.seven.compile ${script_parameter}
+      > "${PROJECT_BINARY_DIR}/${output_file}"
+    DEPENDS
+      datasrc/seven/compile.py
+      datasrc/seven/content.py
+      datasrc/seven/datatypes.py
+      datasrc/seven/network.py
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
+endfunction()
+
+function(generate_maps output_file script_parameter)
+  add_custom_command(OUTPUT ${output_file}
+    COMMAND ${Python3_EXECUTABLE} datasrc/crosscompile.py ${script_parameter}
+      > "${PROJECT_BINARY_DIR}/${output_file}"
+    DEPENDS
+      datasrc/crosscompile.py
+      datasrc/compile.py
+      datasrc/content.py
+      datasrc/datatypes.py
+      datasrc/network.py
+      datasrc/seven/compile.py
+      datasrc/seven/content.py
+      datasrc/seven/datatypes.py
+      datasrc/seven/network.py
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  )
+endfunction()
+
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/src/game/generated/")
+execute_process(COMMAND git rev-parse --git-dir
+  ERROR_QUIET
+  WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+  OUTPUT_VARIABLE PROJECT_GIT_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE PROJECT_GIT_DIR_ERROR
+)
+if(NOT PROJECT_GIT_DIR_ERROR)
+  set(GIT_REVISION_EXTRA_DEPS
+    ${PROJECT_GIT_DIR}/index
+    ${PROJECT_GIT_DIR}/logs/HEAD
+  )
+endif()
+add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/src/game/generated/git_revision.cpp
+  COMMAND ${Python3_EXECUTABLE}
+    scripts/git_revision.py
+    > ${PROJECT_BINARY_DIR}/src/game/generated/git_revision.cpp
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  DEPENDS
+    ${GIT_REVISION_EXTRA_DEPS}
+    scripts/git_revision.py
+)
+generate_source("src/game/generated/client_data.cpp" "client_content_source")
+generate_source("src/game/generated/client_data.h" "client_content_header")
+generate_source("src/game/generated/data_types.h" "content_types_header")
+generate_source("src/game/generated/protocol.cpp" "network_source")
+generate_source("src/game/generated/protocol.h" "network_header")
+generate_source("src/game/generated/server_data.cpp" "server_content_source")
+generate_source("src/game/generated/server_data.h" "server_content_header")
+
+generate_source7("src/game/generated/protocol7.cpp" "network_source")
+generate_source7("src/game/generated/protocol7.h" "network_header")
+generate_source7("src/game/generated/client_data7.cpp" "client_content_source")
+generate_source7("src/game/generated/client_data7.h" "client_content_header")
+
+generate_maps("src/game/generated/protocolglue.h" "map_header")
+generate_maps("src/game/generated/protocolglue.cpp" "map_source")
+
+add_custom_command(OUTPUT "src/game/generated/wordlist.h"
+  COMMAND ${Python3_EXECUTABLE} scripts/wordlist.py > ${PROJECT_BINARY_DIR}/src/game/generated/wordlist.h
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+  DEPENDS
+    scripts/wordlist.py
+)
+
+########################################################################
+# SHARED
+########################################################################
+
+# Sources
+set(BASE
+  src/base/aio.cpp
+  src/base/aio.h
+  src/base/bezier.cpp
+  src/base/bezier.h
+  src/base/bytes.cpp
+  src/base/bytes.h
+  src/base/color.cpp
+  src/base/color.h
+  src/base/crashdump.cpp
+  src/base/crashdump.h
+  src/base/dbg.cpp
+  src/base/dbg.h
+  src/base/detect.h
+  src/base/dynamic.h
+  src/base/flags.cpp
+  src/base/flags.h
+  src/base/fs.cpp
+  src/base/fs.h
+  src/base/hash.cpp
+  src/base/hash.h
+  src/base/hash_ctxt.h
+  src/base/hash_openssl.cpp
+  src/base/io.cpp
+  src/base/io.h
+  src/base/lock.h
+  src/base/log.cpp
+  src/base/log.h
+  src/base/log_color.h
+  src/base/logger.h
+  src/base/math.cpp
+  src/base/math.h
+  src/base/mem.cpp
+  src/base/mem.h
+  src/base/net.cpp
+  src/base/net.h
+  src/base/os.cpp
+  src/base/os.h
+  src/base/process.cpp
+  src/base/process.h
+  src/base/secure.cpp
+  src/base/secure.h
+  src/base/sphore.cpp
+  src/base/sphore.h
+  src/base/str.cpp
+  src/base/str.h
+  src/base/thread.cpp
+  src/base/thread.h
+  src/base/time.cpp
+  src/base/time.h
+  src/base/tl/allocator.h
+  src/base/tl/array.h
+  src/base/tl/base.h
+  src/base/tl/ic_array.h
+  src/base/tl/ic_enum.h
+  src/base/tl/ic_fifo.h
+  src/base/tl/range.h
+  src/base/tl/threading.h
+  src/base/types.h
+  src/base/unicode/confusables.cpp
+  src/base/unicode/confusables.h
+  src/base/unicode/confusables_data.cpp
+  src/base/unicode/tolower.cpp
+  src/base/unicode/tolower_data.cpp
+  src/base/unicode/tolower_data.h
+  src/base/vmath.h
+  src/base/windows.cpp
+  src/base/windows.h
+)
+
+set(teeuniverses_SOURCES
+  src/teeuniverses/components/localization.cpp
+  src/teeuniverses/components/localization.h
+  src/teeuniverses/system/string.h
+)
+
+set_glob(ENGINE_INTERFACE GLOB src/engine
+  config.h
+  console.h
+  demo.h
+  engine.h
+  graphics.h
+  http.h
+  kernel.h
+  lua.h
+  map.h
+  masterserver.h
+  message.h
+  server.h
+  storage.h
+  uuid.h
+  warning.h
+)
+set_glob(ENGINE_SHARED GLOB src/engine/shared
+  assertion_logger.cpp
+  assertion_logger.h
+  compression.cpp
+  compression.h
+  config.cpp
+  config.h
+  config_variables.h
+  console.cpp
+  console.h
+  datafile.cpp
+  datafile.h
+  demo.cpp
+  demo.h
+  econ.cpp
+  econ.h
+  engine.cpp
+  filecollection.cpp
+  filecollection.h
+  fixed_point_number.cpp
+  fixed_point_number.h
+  global_uuid_manager.cpp
+  http.cpp
+  http.h
+  huffman.cpp
+  huffman.h
+  jobs.cpp
+  jobs.h
+  json.cpp
+  json.h
+  kernel.cpp
+  linereader.cpp
+  linereader.h
+  map.cpp
+  map.h
+  masterserver.cpp
+  memheap.cpp
+  memheap.h
+  message.h
+  netban.cpp
+  netban.h
+  netdatabase.cpp
+  netdatabase.h
+  network.cpp
+  network.h
+  network_conn.cpp
+  network_console.cpp
+  network_console_conn.cpp
+  network_server.cpp
+  packer.cpp
+  packer.h
+  protocol.h
+  protocol_ex.cpp
+  protocol_ex.h
+  protocol_ex_msgs.h
+  protocolglue.cpp
+  protocolglue.h
+  ringbuffer.cpp
+  ringbuffer.h
+  snapshot.cpp
+  snapshot.h
+  storage.cpp
+  teehistorian_ex.h
+  uuid_manager.cpp
+  uuid_manager.h
+)
+set_src(ENGINE_GFX GLOB src/engine/gfx
+  image_loader.cpp
+  image_loader.h
+  image_manipulation.cpp
+  image_manipulation.h
+)
+set_glob(GAME_SHARED GLOB src/game
+  animation.cpp
+  animation.h
+  collision.cpp
+  collision.h
+  gamecore.cpp
+  gamecore.h
+  infclass/ic_classes.cpp
+  infclass/ic_classes.h
+  infclass/damage_type.cpp
+  infclass/damage_type.h
+  infclass/weapons.cpp
+  infclass/weapons.h
+  layers.cpp
+  layers.h
+  mapitems.h
+  mapitems_ex.cpp
+  mapitems_ex.h
+  mapitems_ex_types.h
+  race_state.h
+  teamscore.cpp
+  teamscore.h
+  tuning.h
+  variables.h
+  version.h
+  voting.h
+)
+# A bit hacky, but these are needed to register all the UUIDs, even for stuff
+# that doesn't link game.
+set(ENGINE_UUID_SHARED
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocolglue.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocolglue.h
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocol7.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocol7.h
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocol.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocol.h
+)
+list(REMOVE_ITEM GAME_SHARED ${ENGINE_UUID_SHARED})
+set(GAME_GENERATED_SHARED
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/data_types.h
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/git_revision.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocol.h
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocol7.h
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/protocolglue.h
+)
+
+set(DEPS ${DEP_JSON} ${ZLIB_DEP})
+
+find_package(ICU REQUIRED COMPONENTS uc i18n)
+
+# Libraries
+set(LIBS
+  ZLIB::ZLIB
+  ${PLATFORM_LIBS}
+  # Add pthreads (on non-Windows) at the end, so that other libraries can depend
+  # on it.
+  ICU::i18n
+  ICU::uc
+  ${CMAKE_THREAD_LIBS_INIT}
+)
+
+# Targets
+add_library(engine-gfx EXCLUDE_FROM_ALL STATIC ${ENGINE_GFX})
+add_library(engine-shared EXCLUDE_FROM_ALL STATIC ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
+add_library(game-shared EXCLUDE_FROM_ALL STATIC ${GAME_SHARED} ${GAME_GENERATED_SHARED} ${teeuniverses_SOURCES})
+list(APPEND TARGETS_OWN engine-gfx engine-shared game-shared)
+
+target_link_libraries(engine-shared PUBLIC
+  CURL::libcurl
+  ZLIB::ZLIB
+  sodium
+  ${CMAKE_THREAD_LIBS_INIT}
+  ${PLATFORM_LIBS}
+)
+
+target_link_libraries(engine-shared PUBLIC
+  OpenSSL::Crypto
+)
+target_compile_definitions(engine-shared PUBLIC CONF_OPENSSL) # Kept for easier porting from DDNet
+
+target_link_libraries(game-shared PUBLIC
+  ZLIB::ZLIB
+  ICU::i18n
+  ICU::uc
+  aho_corasick
+)
+
+include_directories(SYSTEM
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_BINARY_DIR}/src
+)
+
+target_link_libraries(engine-gfx PUBLIC
+  PNG::PNG
+)
+
+########################################################################
+# SERVER
+########################################################################
+
+# Sources
+set_src(ENGINE_SERVER GLOB_RECURSE src/engine/server
+  accounts.cpp
+  accounts.h
+  databases/connection.cpp
+  databases/connection.h
+  databases/connection_pool.cpp
+  databases/connection_pool.h
+  databases/schema.cpp
+  databases/schema.h
+  databases/sqlite.cpp
+  lua.cpp
+  lua.h
+  lua_apidef.cpp
+  lua_callback.h
+  luabinding.cpp
+  luabinding.h
+  mapconverter.cpp
+  mapconverter.h
+  #measure_ticks.cpp
+  #measure_ticks.h
+  name_ban.cpp
+  name_ban.h
+  netsession.h
+  register.cpp
+  register.h
+  roundstatistics.cpp
+  roundstatistics.h
+  server.cpp
+  server.h
+  server_logger.cpp
+  server_logger.h
+  snap_id_pool.cpp
+  snap_id_pool.h
+)
+
+set_glob(GAME_SERVER GLOB_RECURSE src/game/server
+  alloc.h
+  chat_filter.cpp
+  chat_filter.h
+  ddracecommands.cpp
+  entities/character.cpp
+  entities/character.h
+  entities_filter.h
+  infclass/bot-player.cpp
+  infclass/bot-player.h
+  infclass/bot_config_parser.cpp
+  infclass/bot_config_parser.cpp
+  infclass/bot_config_parser.h
+  infclass/bot_config_parser.h
+  infclass/bot_utils.cpp
+  infclass/bot_utils.h
+  infclass/classes/humans/human.cpp
+  infclass/classes/humans/human.h
+  infclass/classes/ic_playerclass.cpp
+  infclass/classes/ic_playerclass.h
+  infclass/classes/infected/infected.cpp
+  infclass/classes/infected/infected.h
+  infclass/damage_context.h
+  infclass/death_context.h
+  infclass/debug-bot-player.cpp
+  infclass/debug-bot-player.h
+  infclass/entities/biologist-laser.cpp
+  infclass/entities/biologist-laser.h
+  infclass/entities/biologist-mine.cpp
+  infclass/entities/biologist-mine.h
+  infclass/entities/blinding-laser.cpp
+  infclass/entities/blinding-laser.h
+  infclass/entities/bouncing-bullet.cpp
+  infclass/entities/bouncing-bullet.h
+  infclass/entities/control-point.cpp
+  infclass/entities/control-point.h
+  infclass/entities/engineer-wall.cpp
+  infclass/entities/engineer-wall.h
+  infclass/entities/flyingpoint.cpp
+  infclass/entities/flyingpoint.h
+  infclass/entities/growingexplosion.cpp
+  infclass/entities/growingexplosion.h
+  infclass/entities/healing_particle.cpp
+  infclass/entities/healing_particle.h
+  infclass/entities/hero-flag.cpp
+  infclass/entities/hero-flag.h
+  infclass/entities/ic_character.cpp
+  infclass/entities/ic_character.h
+  infclass/entities/ic_door.cpp
+  infclass/entities/ic_door.h
+  infclass/entities/ic_entity.cpp
+  infclass/entities/ic_entity.h
+  infclass/entities/ic_laser.cpp
+  infclass/entities/ic_laser.h
+  infclass/entities/ic_pickup.cpp
+  infclass/entities/ic_pickup.h
+  infclass/entities/ic_placed_object.cpp
+  infclass/entities/ic_placed_object.h
+  infclass/entities/ic_projectile.cpp
+  infclass/entities/ic_projectile.h
+  infclass/entities/laser-teleport.cpp
+  infclass/entities/laser-teleport.h
+  infclass/entities/looper-wall.cpp
+  infclass/entities/looper-wall.h
+  infclass/entities/medic-laser.cpp
+  infclass/entities/medic-laser.h
+  infclass/entities/merc-bomb.cpp
+  infclass/entities/merc-bomb.h
+  infclass/entities/merc-laser.cpp
+  infclass/entities/merc-laser.h
+  infclass/entities/plasma.cpp
+  infclass/entities/plasma.h
+  infclass/entities/portal.cpp
+  infclass/entities/portal.h
+  infclass/entities/scatter-grenade.cpp
+  infclass/entities/scatter-grenade.h
+  infclass/entities/scientist-laser.cpp
+  infclass/entities/scientist-laser.h
+  infclass/entities/scientist-mine.cpp
+  infclass/entities/scientist-mine.h
+  infclass/entities/slug-slime.cpp
+  infclass/entities/slug-slime.h
+  infclass/entities/soldier-bomb.cpp
+  infclass/entities/soldier-bomb.h
+  infclass/entities/superweapon-indicator.cpp
+  infclass/entities/superweapon-indicator.h
+  infclass/entities/turret.cpp
+  infclass/entities/turret.h
+  infclass/entities/white-hole.cpp
+  infclass/entities/white-hole.h
+  infclass/events-director.cpp
+  infclass/events-director.h
+  infclass/hive_mind.cpp
+  infclass/hive_mind.h
+  infclass/ic_config_variables.h
+  infclass/ic_entities.cpp
+  infclass/ic_gamecontroller.cpp
+  infclass/ic_gamecontroller.h
+  infclass/ic_lua.cpp
+  infclass/ic_player.cpp
+  infclass/ic_player.h
+  infclass/snap_filter.cpp
+  infclass/snap_filter.h
+  infclass/survival.h
+  entity.cpp
+  entity.h
+  eventhandler.cpp
+  eventhandler.h
+  gamecontext.cpp
+  gamecontext.h
+  gamecontroller.cpp
+  gamecontroller.h
+  gameworld.cpp
+  gameworld.h
+  map_info.cpp
+  map_info.h
+  player.cpp
+  player.h
+  skininfo.h
+  snap_context.h
+  teams.cpp
+  teams.h
+  teeinfo.cpp
+  teeinfo.h
+)
+set(GAME_GENERATED_SERVER
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/server_data.cpp
+  ${CMAKE_CURRENT_BINARY_DIR}/src/game/generated/server_data.h
+)
+set(SERVER_SRC ${ENGINE_SERVER} ${GAME_SERVER} ${GAME_GENERATED_SERVER})
+set(SERVER_ICON)
+
+# Libraries
+set(LIBS_SERVER
+  ${LIBS}
+  SQLite::SQLite3
+  # Add pthreads (on non-Windows) at the end, so that other libraries can depend
+  # on it.
+  ${CMAKE_THREAD_LIBS_INIT}
+)
+
+if(USE_LUA)
+  list(APPEND LIBS_SERVER ${LUAJIT_NAME}::${LUAJIT_NAME} LuaBridge)
+endif()
+
+########################################################################
+# VARIOUS TARGETS
+########################################################################
+
+if(TOOLS)
+  set(TARGETS_TOOLS)
+  set_src(TOOLS_SRC GLOB src/tools
+    dilate.cpp
+    dummy_map.cpp
+    generate_lua_config.cpp
+    map_convert_for_client.cpp
+    map_diff.cpp
+    map_extract.cpp
+    map_resave.cpp
+    packetgen.cpp
+    unicode_confusables.cpp
+    uuid.cpp
+  )
+  foreach(ABS_T ${TOOLS_SRC})
+    # Infclass: ABS_T is not actually ABS because of the changes in set_glob()
+    set(ABS_T "${PROJECT_SOURCE_DIR}/${ABS_T}")
+
+    file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
+    if(T MATCHES "\\.cpp$")
+      string(REGEX REPLACE "\\.cpp$" "" TOOL "${T}")
+      set(TOOL_DEPS ${DEPS})
+      set(TOOL_LIBS ${LIBS})
+      unset(EXTRA_TOOL_SRC)
+      if(TOOL MATCHES "^(dilate|map_convert_07|map_optimize|map_extract|map_replace_image)$")
+        list(APPEND TOOL_LIBS engine-gfx)
+      endif()
+      if(TOOL MATCHES "^config_")
+        list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
+      endif()
+      if(TOOL MATCHES "^(map_convert_for_client)$")
+        list(APPEND TOOL_LIBS engine-gfx ${LIBS_SERVER})
+        list(APPEND EXTRA_TOOL_SRC ${SERVER_SRC})
+      endif()
+      set(EXCLUDE_FROM_ALL)
+      if(DEV)
+        set(EXCLUDE_FROM_ALL EXCLUDE_FROM_ALL)
+      endif()
+      message(STATUS "Found tool ${TOOL}")
+      add_executable(${TOOL} ${EXCLUDE_FROM_ALL}
+        ${TOOL_DEPS}
+        src/tools/${TOOL}.cpp
+        ${EXTRA_TOOL_SRC}
+      )
+      target_include_directories(${TOOL} SYSTEM PRIVATE ${TOOL_INCLUDE_DIRS})
+      target_link_libraries(${TOOL} ${TOOL_LIBS}
+        engine-shared
+        game-shared # engine depends on mapitems_ex.cpp
+      )
+      list(APPEND TARGETS_TOOLS ${TOOL})
+    endif()
+  endforeach()
+
+  list(APPEND TARGETS_OWN ${TARGETS_TOOLS})
+  list(APPEND TARGETS_LINK ${TARGETS_TOOLS})
+
+  add_custom_target(tools DEPENDS ${TARGETS_TOOLS})
+endif()
+
+#add_library(server-shared STATIC ${SERVER_SRC})
+
+# Target
+add_executable(game-server
+  src/game/server/main_server.cpp
+  ${DEPS}
+  ${SERVER_SRC}
+  ${SERVER_ICON}
+)
+
+set_property(TARGET game-server
+    PROPERTY OUTPUT_NAME ${SERVER_EXECUTABLE}
+)
+
+list(APPEND TARGETS_OWN game-server)
+
+if(GEOLOCATION)
+  add_library(GeoLite2PP STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/infclassr/GeoLite2PP/GeoLite2PP.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/infclassr/GeoLite2PP/GeoLite2PP.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/infclassr/GeoLite2PP/GeoLite2PP_error_category.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/infclassr/GeoLite2PP/GeoLite2PP_error_category.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/infclassr/GeoLite2PP/GeoLite2PP_version.hpp
+  )
+  target_include_directories(GeoLite2PP PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/infclassr
+  )
+  add_library(GeoLite2PP::GeoLite2PP ALIAS GeoLite2PP)
+
+  target_sources(game-server PRIVATE
+    "src/infclassr/geolocation.cpp"
+    "src/infclassr/geolocation.h"
+  )
+
+  target_compile_definitions(game-server PRIVATE CONF_GEOLOCATION)
+  target_link_libraries(GeoLite2PP ${MAXMINDDB_NAME}::${MAXMINDDB_NAME})
+  target_link_libraries(game-server GeoLite2PP::GeoLite2PP)
+endif()
+
+if(USE_LUA)
+  target_compile_definitions(game-server PRIVATE CONF_LUA=1)
+else()
+  target_compile_definitions(game-server PRIVATE CONF_LUA=0)
+endif()
+
+target_link_libraries(game-server ${LIBS_SERVER})
+list(APPEND TARGETS_OWN game-server)
+list(APPEND TARGETS_LINK game-server)
+
+target_link_libraries(game-server engine-gfx)
+target_link_libraries(game-server engine-shared)
+target_link_libraries(game-server game-shared)
+target_link_libraries(game-server ICU::i18n)
+target_link_libraries(game-server ICU::uc)
+
+set(PO_LANG_DIR "${CMAKE_SOURCE_DIR}/other/po")
+file(GLOB_RECURSE PO_LANG_FILES
+  CONFIGURE_DEPENDS
+  ${PO_LANG_DIR}/*
+)
+
+add_custom_target(lang-json
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/translation-python3.py
+  ${PO_LANG_DIR}
+  ${CMAKE_BINARY_DIR}
+  DEPENDS ${PO_LANG_FILES}
+)
+
+add_dependencies(game-server lang-json)
+
+if(TARGET_OS AND TARGET_OS STREQUAL "mac")
+  set(SERVER_LAUNCHER_SRC src/macos/server.mm)
+  set(TARGET_SERVER_LAUNCHER Server-Launcher)
+  add_executable(${TARGET_SERVER_LAUNCHER} ${SERVER_LAUNCHER_SRC})
+  target_link_libraries(${TARGET_SERVER_LAUNCHER} ${COCOA})
+  list(APPEND TARGETS_OWN ${TARGET_SERVER_LAUNCHER})
+  list(APPEND TARGETS_LINK ${TARGET_SERVER_LAUNCHER})
+endif()
+
+########################################################################
+# TESTS
+########################################################################
+set(DATA_INSTALL_EXCLUDES PATTERN "maps/*coverage.map" EXCLUDE)
+
+if(BUILD_TESTS)
+  if(NOT TARGET gtest)
+    message(SEND_ERROR "GTest not found, unable to build the tests")
+  endif()
+  add_library(game-test STATIC
+    "src/test/test.cpp"
+    "src/test/test.h"
+  )
+  list(APPEND TARGETS_OWN game-test)
+  target_sources(game-test PRIVATE
+    ${SERVER_SRC}
+  )
+  target_link_libraries(game-test PUBLIC
+    engine-shared
+    engine-gfx
+    game-shared
+    ${LIBS_SERVER}
+    ${DEPS}
+    ${GTEST_LIBRARIES}
+  )
+  enable_testing()
+  set(TESTS
+    "test_Accounts"
+    "test_CGameWorld"
+    "test_DbSchema"
+    "test_bot_config_parser"
+    "test_bot_utils"
+    "test_icArray"
+    "test_icFifoArray"
+  )
+  if(USE_LUA)
+    target_compile_definitions(game-test PRIVATE CONF_LUA=1)
+    list(APPEND TESTS "test_Lua")
+  else()
+    target_compile_definitions(game-test PRIVATE CONF_LUA=0)
+  endif()
+  foreach(TEST_NAME ${TESTS})
+    add_executable(${TEST_NAME} "src/tests/${TEST_NAME}.cpp")
+    target_include_directories(${TEST_NAME} SYSTEM PRIVATE ${TOOL_INCLUDE_DIRS})
+    target_link_libraries(${TEST_NAME} ${TOOL_LIBS}
+      game-test
+    )
+    target_include_directories(${TEST_NAME} SYSTEM PRIVATE ${GTEST_INCLUDE_DIRS})
+    add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    list(APPEND TARGETS_OWN ${TEST_NAME})
+  endforeach()
+  set(DATA_INSTALL_EXCLUDES "")
+endif()
+
+########################################################################
+# INSTALLATION
+########################################################################
+
+install(
+  DIRECTORY
+    "data/"
+  DESTINATION
+    "data"
+  ${DATA_INSTALL_EXCLUDES}
+)
+install(
+  DIRECTORY
+  "other/3rd-party-licenses/"
+  DESTINATION
+  "3rd-party-licenses"
+)
+install(
+  FILES
+  "license.txt"
+  DESTINATION
+  "."
+)
+install(
+  DIRECTORY
+    "${CMAKE_BINARY_DIR}/data/languages/"
+  DESTINATION
+    "data/languages"
+)
+install(
+  TARGETS
+    game-server
+  DESTINATION
+    "."
+)
+install(
+  FILES
+    "ChangeLog.txt"
+    "autoexec.cfg"
+    "normal.cfg"
+    "normalize.cfg"
+    "hide.cfg"
+    "reset.cfg"
+    "zowling.cfg"
+  DESTINATION
+    "."
+)
+install(
+  DIRECTORY
+    "survivals/"
+  DESTINATION
+    "survivals"
+)
+install(
+  FILES
+    "storage.cfg"
+  RENAME
+    "storage.cfg.example"
+  DESTINATION
+    "."
+)
+install(
+  DIRECTORY
+    "lua/"
+  DESTINATION
+    "lua"
+)
+
+set(CPACK_GENERATOR ZIP)
+include(CPack)
+
+########################################################################
+# COMPILER-SPECIFICS
+########################################################################
+
+set(TARGETS ${TARGETS_OWN} ${TARGETS_DEP})
+
+foreach(target ${TARGETS})
+  if(MSVC)
+    # Static CRT is set via CMAKE_CXX_FLAGS to fix compatibility with Conan
+    # target_compile_options(${target} PRIVATE $<$<NOT:${DBG}>:/MT> $<${DBG}:/MTd>) # Use static CRT
+    target_compile_options(${target} PRIVATE /MP) # Use multiple cores
+    target_compile_options(${target} PRIVATE /EHsc) # Only catch C++ exceptions with catch.
+    target_compile_options(${target} PRIVATE /GS) # Protect the stack pointer.
+    target_compile_options(${target} PRIVATE /wd4996) # Use of non-_s functions.
+    target_compile_options(${target} PRIVATE /utf-8) # Use UTF-8 for source files.
+  endif()
+  if(OUR_FLAGS_LINK)
+    target_link_libraries(${target} ${OUR_FLAGS_LINK})
+  endif()
+  if(OUR_FLAGS)
+    target_compile_options(${target} PRIVATE ${OUR_FLAGS})
+  endif()
+  if(DEFINE_FORTIFY_SOURCE)
+    if(MINGW)
+      target_compile_definitions(${target} PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=0>) # Currently broken in MinGW, see https://sourceforge.net/p/mingw-w64/discussion/723798/thread/b9d24f041f/
+    else()
+      target_compile_definitions(${target} PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>) # Detect some buffer overflows.
+    endif()
+  endif()
+endforeach()
+
+foreach(target ${TARGETS_OWN})
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /wd4065) # switch statement contains 'default' but no 'case' labels
+    target_compile_options(${target} PRIVATE /wd4244) # Possible loss of data (float -> int, int -> float, etc.).
+    target_compile_options(${target} PRIVATE /wd4267) # Possible loss of data (size_t - int on win64).
+    target_compile_options(${target} PRIVATE /wd4800) # Implicit conversion of int to bool.
+  endif()
+  if(TARGET_OS STREQUAL "windows")
+    # See https://learn.microsoft.com/en-us/windows/win32/winprog/using-the-windows-headers
+    target_compile_definitions(${target} PRIVATE NOMINMAX) # windows.h shouldn't define min/max macros
+    target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN) # windows.h shouldn't define the name IStorage
+    # 0x0501 (Windows XP) is required for mingw to get getaddrinfo to work
+    # 0x0600 (Windows Vista) is required to use RegGetValueW and RegDeleteTreeW
+    target_compile_definitions(${target} PRIVATE NTDDI_VERSION=0x06000000) # Minimum OS version (new macro, since Vista)
+    target_compile_definitions(${target} PRIVATE _WIN32_WINNT=0x0600) # Minimum OS version (old macro, both must be defined)
+    target_compile_definitions(${target} PRIVATE UNICODE) # Windows headers
+    target_compile_definitions(${target} PRIVATE _UNICODE) # C-runtime
+  endif()
+  if(OUR_FLAGS_OWN)
+    target_compile_options(${target} PRIVATE ${OUR_FLAGS_OWN})
+  endif()
+
+  target_compile_definitions(${target} PRIVATE $<$<CONFIG:Debug>:CONF_DEBUG>)
+
+endforeach()
+
+foreach(target ${TARGETS_DEP})
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W0)
+  endif()
+endforeach()

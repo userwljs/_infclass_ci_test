@@ -1,0 +1,159 @@
+#ifndef __SHARED_LOCALIZATION__
+#define __SHARED_LOCALIZATION__
+
+#define CStorage IStorage
+
+#include "teeuniverses/system/string.h"
+
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unicode/tmutfmt.h>
+#include <unicode/upluralrules.h>
+#include <unordered_map>
+
+template<typename T>
+using StringHashMap = std::unordered_map<
+	std::string,
+	T,
+	StringTransparentHasher,
+	std::equal_to<>>;
+
+struct CLocalizableString
+{
+	const char *m_pText;
+
+	CLocalizableString(const char *pText) :
+		m_pText(pText)
+	{
+	}
+};
+
+/* BEGIN EDIT *********************************************************/
+#define LOCALIZE_CONTEXT_SEPARATOR "\004"
+// concatenate an empty string literal to avoid misuse
+#define _(TEXT) "" TEXT
+#define _P(TEXT_SINGULAR, TEXT_PLURAL, NUMBER) (NUMBER == 1 ? "" TEXT_SINGULAR : "" TEXT_PLURAL)
+#define _C(CONTEXT, TEXT) CONTEXT LOCALIZE_CONTEXT_SEPARATOR TEXT
+#define _CP(CONTEXT, TEXT_SINGULAR, TEXT_PLURAL, NUMBER) (NUMBER == 1 ? CONTEXT LOCALIZE_CONTEXT_SEPARATOR TEXT_SINGULAR : CONTEXT LOCALIZE_CONTEXT_SEPARATOR TEXT_PLURAL)
+/* END EDIT ***********************************************************/
+
+/* BEGIN EDIT *********************************************************/
+class CLocalization
+{
+private:
+	class CStorage *m_pStorage;
+	inline class CStorage *Storage() const { return m_pStorage; }
+	/* END EDIT ***********************************************************/
+public:
+	enum
+	{
+		PLURALTYPE_NONE = 0,
+		PLURALTYPE_ZERO,
+		PLURALTYPE_ONE,
+		PLURALTYPE_TWO,
+		PLURALTYPE_FEW,
+		PLURALTYPE_MANY,
+		PLURALTYPE_OTHER,
+		NUM_PLURALTYPES,
+	};
+
+	static std::string_view LanguageCodeByCountryCode(int country);
+	static std::string_view FallbackLanguageForIpCountryCode(int Country);
+
+	class CLanguage
+	{
+	protected:
+		class CEntry
+		{
+		public:
+			std::optional<std::string> m_apVersions[NUM_PLURALTYPES];
+
+			CEntry()
+			{
+				for(auto &pVersion : m_apVersions)
+					pVersion = std::nullopt;
+			}
+		};
+
+	protected:
+		char m_aName[64];
+		char m_aFilename[64];
+		char m_aParentFilename[64];
+		bool m_Loaded;
+		int m_Direction;
+
+		StringHashMap<CEntry> m_Translations;
+
+	public:
+		UPluralRules *m_pPluralRules;
+		UNumberFormat *m_pNumberFormater;
+		UNumberFormat *m_pPercentFormater;
+		icu::TimeUnitFormat *m_pTimeUnitFormater;
+
+		CLanguage();
+		CLanguage(const char *pName, const char *pFilename, const char *pParentFilename);
+		~CLanguage();
+
+		inline const char *GetParentFilename() const { return m_aParentFilename; }
+		inline const char *GetFilename() const { return m_aFilename; }
+		inline const char *GetName() const { return m_aName; }
+		inline int GetWritingDirection() const { return m_Direction; }
+		inline void SetWritingDirection(int Direction) { m_Direction = Direction; }
+		inline bool IsLoaded() const { return m_Loaded; }
+		bool Load(CStorage *pStorage);
+		[[nodiscard]] const char *Localize(const char *pText) const;
+		const char *Localize_P(int Number, const char *pText) const;
+	};
+
+	enum
+	{
+		DIRECTION_LTR = 0,
+		DIRECTION_RTL,
+		NUM_DIRECTIONS,
+	};
+	StringHashMap<CLanguage> m_pLanguages;
+
+protected:
+	const char *LocalizeWithDepth(const char *pLanguageCode, const char *pText, int Depth);
+	[[nodiscard]] const char *LocalizeWithDepth_P(const char *pLanguageCode, int Number, const char *pText, int Depth);
+
+	static void AppendNumber(std::string &Buffer, const CLanguage *pLanguage, int Number);
+	static void AppendPercent(std::string &Buffer, const CLanguage *pLanguage, double Number);
+	static void AppendDuration(std::string &Buffer, const CLanguage *pLanguage, int Number, icu::TimeUnit::UTimeUnitFields Type);
+
+public:
+	/* BEGIN EDIT *********************************************************/
+	explicit CLocalization(class CStorage *pStorage);
+	/* END EDIT ***********************************************************/
+
+	/* BEGIN EDIT *********************************************************/
+	char m_ArgNumberColor[5] = "\0"; // useful for colorizing numbers in broadcasts for 0.7 clients
+	/* END EDIT ***********************************************************/
+	bool Init();
+
+	// inline bool GetWritingDirection() const { return (!m_pMainLanguage ? DIRECTION_LTR : m_pMainLanguage->GetWritingDirection()); }
+	static bool GetWritingDirection() { return DIRECTION_LTR; }
+
+	// localize
+	[[nodiscard]] const char *Localize(const char *pLanguageCode, const char *pText);
+	// localize and find the appropriate plural form based on Number
+	[[nodiscard]] const char *Localize_P(const char *pLanguageCode, int Number, const char *pText);
+
+	// format
+	[[nodiscard]] std::string Format_V(const char *pLanguageCode, const char *pText, va_list VarArgs);
+	[[nodiscard]] std::string Format(const char *pLanguageCode, const char *pText, ...);
+	// localize, format
+	[[nodiscard]] std::string Format_VL(const char *pLanguageCode, const char *pText, va_list VarArgs);
+	[[nodiscard]] std::string Format_L(const char *pLanguageCode, const char *pText, ...);
+	// localize, find the appropriate plural form based on Number and format
+	[[nodiscard]] std::string Format_VLP(const char *pLanguageCode, int Number, const char *pText, va_list VarArgs);
+	[[nodiscard]] std::string Format_LP(const char *pLanguageCode, int Number, const char *pText, ...);
+
+	static void ArabicShaping(std::string &Buffer);
+
+	[[nodiscard]] std::string GetLanguageNameByCode(const char *pLanguageCode);
+	[[nodiscard]] CLanguage *GetLanguageByCode(const char *pLanguageCode);
+};
+
+#endif

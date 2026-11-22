@@ -1,0 +1,118 @@
+#include "ic_placed_object.h"
+
+#include <engine/server.h>
+#include <game/server/infclass/entities/ic_character.h>
+#include <game/server/infclass/ic_gamecontroller.h>
+
+CPlacedObject::CPlacedObject(CGameContext *pGameContext, int ObjectType, vec2 Pos, int Owner, int ProximityRadius) : CIcEntity(pGameContext, ObjectType, Pos, Owner, ProximityRadius)
+{
+	m_InfClassObjectId = Server()->SnapNewId();
+	m_InfClassObjectType = INFCLASS_OBJECT_TYPE_CUSTOM;
+}
+
+CPlacedObject::~CPlacedObject()
+{
+	if(m_InfClassObjectId.has_value())
+	{
+		Server()->SnapFreeId(m_InfClassObjectId.value());
+	}
+}
+
+void CPlacedObject::MoveTo(const vec2 &Position)
+{
+	if(m_Pos2.has_value())
+	{
+		vec2 Difference = Position - m_Pos;
+		CIcEntity::MoveTo(Position);
+		m_Pos2 = m_Pos2.value() + Difference;
+	}
+}
+
+void CPlacedObject::SetSecondPosition(vec2 Position)
+{
+	if(m_MaxLength.has_value() && distance(m_Pos, Position) > m_MaxLength.value())
+	{
+		m_Pos2 = m_Pos + normalize(Position - m_Pos) * m_MaxLength.value();
+	}
+	else
+	{
+		m_Pos2 = Position;
+	}
+
+	m_InfClassObjectFlags |= INFCLASS_OBJECT_FLAG_HAS_SECOND_POSITION;
+}
+
+void CPlacedObject::SetMaxLength(float Length)
+{
+	if(Length == 0)
+	{
+		m_MaxLength.reset();
+	}
+	else
+	{
+		m_MaxLength = Length;
+	}
+}
+
+void CPlacedObject::Tick()
+{
+	CIcEntity::Tick();
+
+	if(m_Pos2.has_value())
+	{
+		m_Pos2.value() += m_Velocity;
+	}
+}
+
+bool CPlacedObject::DoSnapForClient(int SnappingClient)
+{
+	if(!GetId().has_value())
+		return false;
+
+	if(IsMarkedForDestroy())
+		return false;
+
+	if(NetworkClipped(SnappingClient) && (!m_Pos2.has_value() || NetworkClipped(SnappingClient, m_Pos2.value())))
+		return false;
+
+	const CIcCharacter *pCharacter = GameController()->GetCharacter(SnappingClient);
+	if(pCharacter && pCharacter->IsBlind())
+		return false;
+
+	return true;
+}
+
+CNetObj_InfClassObject *CPlacedObject::SnapInfClassObject()
+{
+	if(!m_InfClassObjectId.has_value())
+		return nullptr;
+	CNetObj_InfClassObject *pInfClassObject = Server()->SnapNewItem<CNetObj_InfClassObject>(m_InfClassObjectId.value());
+	if(!pInfClassObject)
+		return nullptr;
+
+	pInfClassObject->m_X = m_Pos.x;
+	pInfClassObject->m_Y = m_Pos.y;
+
+	pInfClassObject->m_Type = m_InfClassObjectType;
+	pInfClassObject->m_Flags = m_InfClassObjectFlags;
+
+	pInfClassObject->m_Owner = GetOwner();
+
+	pInfClassObject->m_StartTick = 0;
+	pInfClassObject->m_EndTick = m_EndTick.value_or(0);
+
+	if(m_Pos2.has_value())
+	{
+		pInfClassObject->m_X2 = m_Pos2.value().x;
+		pInfClassObject->m_Y2 = m_Pos2.value().y;
+	}
+	else
+	{
+		pInfClassObject->m_X2 = 0;
+		pInfClassObject->m_Y2 = 0;
+	}
+
+	pInfClassObject->m_ProximityRadius = f2fx(GetProximityRadius());
+
+	return pInfClassObject;
+}

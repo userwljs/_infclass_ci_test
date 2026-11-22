@@ -1,0 +1,93 @@
+# Teeworlds InfClassR
+
+Infection Mod with a class system for TeeWorlds, originally developed by
+[necropotame](https://github.com/necropotame/teeworlds-infclass).
+
+This version is based on [Kaffeine's fork](https://github.com/infclass/teeworlds-infclassR).
+See the [ChangeLog](https://github.com/userwljs/teeworlds-infclassR/blob/production/CHANGELOG.md#infclassr-v120---2021-03-10)
+for details.
+
+# Building
+
+## Dependencies
+Installing on Debian / Ubuntu:
+```shell
+apt install -y \
+    python3 \
+    python-is-python3 \
+    build-essential \
+    cmake \
+    libicu-dev \
+    libpng-dev \
+    libcurl4-openssl-dev \
+    libsqlite3-dev \
+    zlib1g-dev \
+    ninja-build \
+    libmaxminddb-dev \
+    libluajit-5.1-dev \
+    libsodium-dev \
+    git \
+    ca-certificates \
+    pkg-config
+```
+
+### Mandatory
+- CMake-3.15+
+- Python3 (needed at build time to generate some code)
+- ICU (needed to support server-side translations)
+- libpng (needed for the classes menu)
+- libcurl (needed to register the server in DDNet)
+- sqlite (needed for accounts)
+- zlib (needed to read the map files)
+- libsodium
+- OpenSSL (needed for accounts)
+- LuaJIT
+
+You also need a build toolchain, such as GCC and Ninja, or MSVC. The compiler must support C++20.
+
+### Optional
+- [GeoLite2++](https://www.ccoderun.ca/GeoLite2++/api/) is used for IP geolocation
+- Google Test (needed for internal tests)
+
+## Configuration options
+
+- `GEOLOCATION` - enables IP-based geolocation which is useful to suggest a language on a client connected
+
+## Building
+
+### Building on Linux
+
+```
+git clone https://github.com/userwljs/teeworlds-infclassR sources
+INSTALL_DIR=$(pwd)/install
+mkdir build
+cd build
+cmake ../sources \
+    -Wno-dev \
+    -DCMAKE_INSTALL_PREFIX=$INSTALL_DIR \
+    -GNinja
+
+cmake --build . --target install
+```
+
+**The `install` target is necessary.**
+
+# Server configuration
+
+You don't need to patch the server to add your contacts. The `/about` chat
+command reply is generated using the follow config variables:
+- `about_source_url` - The server source code URL. Update if you're using a fork.
+- `about_translation_url` - The translation site URL. Change if you also supply your own translation.
+- `about_contacts_discord` - Discord server invite URL. Links to 'Official Infclass' Discord server by default.
+- `about_contacts_telegram` - Telegram URL or ID. Empty by default.
+- `about_contacts_matrix` - Matrix room URL. Links to some Infclass matrix server by default.
+
+# Translations
+Translation is done [on Weblate](https://hosted.weblate.org/projects/infclassr/). Please read carefully [project instructions](https://hosted.weblate.org/projects/infclassr/infclassr/#information) if you want to help.
+
+[![Translation Stats](https://hosted.weblate.org/widget/infclassr/multi-auto.svg)](https://hosted.weblate.org/engage/infclassr/)
+
+## Notes
+
+This product includes GeoLite2 data created by MaxMind, available from
+[https://maxmind.com](https://www.maxmind.com).

@@ -1,0 +1,40 @@
+/* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
+/* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include "biologist-laser.h"
+
+#include <game/infclass/damage_type.h>
+#include <game/infclass/weapons.h>
+#include <game/server/gamecontext.h>
+#include <game/server/infclass/entities/ic_character.h>
+
+CBiologistLaser::CBiologistLaser(CGameContext *pGameContext, vec2 Pos, vec2 Direction, int Owner, int Dmg) :
+	CIcLaser(pGameContext, Pos, Direction, 400.0f, Owner, Dmg, EInfclassWeapon::BIOLOGIST_MINE_LASER)
+{
+	m_MaxBounces = 4;
+	m_BounceCost = -100;
+
+	DoBounce();
+}
+
+bool CBiologistLaser::HitTarget(vec2 From, vec2 To)
+{
+	for(TEntityPtr<CIcCharacter> p = GameWorld()->FindFirst<CIcCharacter>(); p; ++p)
+	{
+		if(p->IsHuman())
+			continue;
+
+		vec2 IntersectPos;
+		if(!closest_point_on_line(From, To, p->m_Pos, IntersectPos))
+			continue;
+
+		float Len = distance(p->m_Pos, IntersectPos);
+		if(Len < p->m_ProximityRadius)
+		{
+			p->TakeDamage(vec2(0.f, 0.f), m_Dmg, GetOwner(), EDamageType::BIOLOGIST_MINE);
+			// Always return false to continue hits
+			return false;
+		}
+	}
+
+	return false;
+}
